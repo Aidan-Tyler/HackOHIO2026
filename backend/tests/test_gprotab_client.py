@@ -221,6 +221,31 @@ def test_backing_track_rebuild_validates_youtube_source(api_client):
     assert api_client.get("/api/audio/..%2Fmain.py").status_code == 404
 
 
+def test_delete_song_removes_chart_tab_and_audio(api_client, monkeypatch):
+    entry = api_client.post(
+        "/api/import", json={"artistSlug": "white-stripes", "songSlug": "seven-nation-army"}
+    ).json()
+    audio_dir = main.AUDIO_DIR
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    (audio_dir / f"{entry['id']}_backing.mp3").write_bytes(b"mp3")
+    (audio_dir / f"{entry['id']}.status.json").write_text('{"status": "ready"}')
+
+    # Refused while the backing track is still being built
+    monkeypatch.setattr(main.backing_jobs, "is_running", lambda chart_id: True)
+    assert api_client.delete(f"/api/songs/{entry['id']}").status_code == 409
+    monkeypatch.setattr(main.backing_jobs, "is_running", lambda chart_id: False)
+
+    res = api_client.delete(f"/api/songs/{entry['id']}")
+    assert res.status_code == 200, res.text
+    assert api_client.get("/api/songs").json()["songs"] == []
+    assert api_client.get(entry["chartUrl"]).status_code == 404
+    assert list(main.RAW_GP_DIR.iterdir()) == []
+    assert list(audio_dir.iterdir()) == []
+
+    assert api_client.delete(f"/api/songs/{entry['id']}").status_code == 404
+    assert api_client.delete("/api/songs/white-stripes-seven_nation_army").status_code == 404
+
+
 def test_import_rejects_bad_slug_and_unknown_chart(api_client):
     assert api_client.post("/api/import", json={"artistSlug": "../x", "songSlug": "y"}).status_code == 422
     assert api_client.get("/api/charts/gprotab-missing.json").status_code == 404
