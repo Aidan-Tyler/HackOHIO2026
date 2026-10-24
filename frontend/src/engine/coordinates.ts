@@ -42,7 +42,7 @@ export const DEFAULT_HIGHWAY_CONFIG: HighwayConfig = {
   speed: 12.0,
   speedMultiplier: 0.012,
   hitBarZ: 0,
-  highwayLengthDist: 48,
+  highwayLengthDist: 56,
   despawnDist: 2.2,
   hitWindowMs: 85,
 };

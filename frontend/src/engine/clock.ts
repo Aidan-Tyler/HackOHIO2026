@@ -13,7 +13,82 @@ export interface ClockOptions {
   onOffsetChange?: (globalOffsetMs: number) => void;
 }
 
-export const SYNTH_LEAD_IN_MS = 2000;
+export const SYNTH_LEAD_IN_MS = 4000;
+export const COUNT_IN_BEATS = 8;
+
+function encodeMonoWavBlob(samples: Float32Array, sampleRate: number): Blob {
+  const numSamples = samples.length;
+  const dataBytes = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  const writeStr = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataBytes, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeStr(36, 'data');
+  view.setUint32(40, dataBytes, true);
+
+  let offset = 44;
+  for (let i = 0; i < numSamples; i++) {
+    const clamped = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(
+      offset,
+      clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff,
+      true,
+    );
+    offset += 2;
+  }
+
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/**
+ * Synthesizes an 8-beat metronome count-in WAV track at the given BPM.
+ */
+function buildEightBeatCountInWav(
+  bpm: number,
+  beats: number = COUNT_IN_BEATS,
+): { blob: Blob; durationMs: number } {
+  const safeBpm = bpm > 0 ? bpm : 120;
+  const beatDurationMs = 60000 / safeBpm;
+  const durationMs = beats * beatDurationMs;
+  const sampleRate = 22050;
+  const numSamples = Math.max(1, Math.ceil((durationMs / 1000) * sampleRate));
+  const samples = new Float32Array(numSamples);
+
+  for (let b = 0; b < beats; b++) {
+    const clickTimeSec = (b * beatDurationMs) / 1000;
+    const startIdx = Math.floor(clickTimeSec * sampleRate);
+    const isDownbeat = b % 4 === 0;
+    const freq = isDownbeat ? 1180 : 800;
+    const clickLen = Math.floor(0.04 * sampleRate);
+    const amp = isDownbeat ? 0.36 : 0.24;
+    for (let i = 0; i < clickLen && startIdx + i < numSamples; i++) {
+      const t = i / sampleRate;
+      const env = Math.exp(-t * 90);
+      samples[startIdx + i] += Math.sin(2 * Math.PI * freq * t) * env * amp;
+    }
+  }
+
+  return {
+    blob: encodeMonoWavBlob(samples, sampleRate),
+    durationMs,
+  };
+}
 
 /**
  * Analyzes the first 15 seconds of an audio file using Web Audio API `decodeAudioData`
@@ -288,21 +363,7 @@ function buildSynthesizedBackingWav(
   const numSamples = totalSec * sampleRate;
   const samples = new Float32Array(numSamples);
 
-  // 1. Render 4-beat count-in clicks during SYNTH_LEAD_IN_MS (0..2000ms)
-  for (let b = 0; b < 4; b++) {
-    const clickTimeSec = (b * (SYNTH_LEAD_IN_MS / 4)) / 1000;
-    const startIdx = Math.floor(clickTimeSec * sampleRate);
-    const freq = b === 0 ? 1100 : 750;
-    const clickLen = Math.floor(0.035 * sampleRate);
-    const amp = b === 0 ? 0.22 : 0.14;
-    for (let i = 0; i < clickLen && startIdx + i < numSamples; i++) {
-      const t = i / sampleRate;
-      const env = Math.exp(-t * 95);
-      samples[startIdx + i] += Math.sin(2 * Math.PI * freq * t) * env * amp;
-    }
-  }
-
-  // 2. Render metronome clicks across measures & beats shifted by SYNTH_LEAD_IN_MS
+  // 1. Render metronome clicks across measures & beats shifted by SYNTH_LEAD_IN_MS
   const measures = chart?.measures ?? [];
   if (measures.length > 0) {
     for (const m of measures) {
@@ -327,7 +388,7 @@ function buildSynthesizedBackingWav(
     }
   }
 
-  // 3. Render synthesized guitar plucks for chart notes shifted by SYNTH_LEAD_IN_MS
+  // 2. Render synthesized guitar plucks for chart notes shifted by SYNTH_LEAD_IN_MS
   const notes = chart?.notes ?? [];
   for (const note of notes) {
     const startSec = (SYNTH_LEAD_IN_MS + note.timeMs) / 1000;
@@ -350,43 +411,7 @@ function buildSynthesizedBackingWav(
     }
   }
 
-  // Encode 16-bit mono WAV
-  const dataBytes = numSamples * 2;
-  const buffer = new ArrayBuffer(44 + dataBytes);
-  const view = new DataView(buffer);
-
-  const writeStr = (offset: number, str: string) => {
-    for (let i = 0; i < str.length; i++) {
-      view.setUint8(offset + i, str.charCodeAt(i));
-    }
-  };
-
-  writeStr(0, 'RIFF');
-  view.setUint32(4, 36 + dataBytes, true);
-  writeStr(8, 'WAVE');
-  writeStr(12, 'fmt ');
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeStr(36, 'data');
-  view.setUint32(40, dataBytes, true);
-
-  let offset = 44;
-  for (let i = 0; i < numSamples; i++) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(
-      offset,
-      clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff,
-      true,
-    );
-    offset += 2;
-  }
-
-  return new Blob([buffer], { type: 'audio/wav' });
+  return encodeMonoWavBlob(samples, sampleRate);
 }
 
 /**
@@ -403,11 +428,16 @@ function buildSynthesizedBackingWav(
  */
 export class AudioClock {
   public readonly audio: HTMLAudioElement;
+  public readonly countInAudio: HTMLAudioElement;
   public globalOffsetMs: number;
 
   private readonly options: ClockOptions;
   private isSynthFallback = false;
   private synthBlobUrl: string | null = null;
+  private countInBlobUrl: string | null = null;
+  private countInDurationMs = 4000;
+  private firstNoteChartMs = 0;
+  private inCountIn = true;
   private debugHudEl: HTMLElement | null = null;
   private readonly keydownHandler: (e: KeyboardEvent) => void;
 
@@ -417,6 +447,10 @@ export class AudioClock {
 
     this.audio = new Audio();
     this.audio.preload = 'auto';
+
+    this.countInAudio = new Audio();
+    this.countInAudio.preload = 'auto';
+    this.configureCountIn(120, 0);
 
     this.audio.addEventListener('play', () => {
       this.notifyStateChange();
@@ -431,10 +465,91 @@ export class AudioClock {
       this.updateDebugHud();
     });
 
+    this.countInAudio.addEventListener('play', () => {
+      this.notifyStateChange();
+      this.updateDebugHud();
+    });
+    this.countInAudio.addEventListener('pause', () => {
+      this.notifyStateChange();
+      this.updateDebugHud();
+    });
+    this.countInAudio.addEventListener('ended', () => {
+      this.inCountIn = false;
+      if (this.audio.paused && !this.audio.ended) {
+        const targetSec = Math.max(
+          0,
+          (this.firstNoteChartMs - this.globalOffsetMs) / 1000,
+        );
+        try {
+          this.audio.currentTime = targetSec;
+        } catch {
+          // Ignore seek errors
+        }
+        void this.audio.play().catch(() => {});
+      }
+      this.notifyStateChange();
+      this.updateDebugHud();
+    });
+
     this.ensureDebugHud();
 
     this.keydownHandler = (e: KeyboardEvent) => this.handleKeyDown(e);
     window.addEventListener('keydown', this.keydownHandler);
+  }
+
+  /**
+   * Configures the 8-beat count-in click track for the loaded song's initial BPM and first note timestamp.
+   */
+  public configureCountIn(initialBpm: number, firstNoteChartMs = 0): void {
+    this.cleanupCountInBlob();
+    this.firstNoteChartMs = firstNoteChartMs;
+    const { blob, durationMs } = buildEightBeatCountInWav(
+      initialBpm,
+      COUNT_IN_BEATS,
+    );
+    this.countInDurationMs = durationMs;
+    this.countInBlobUrl = URL.createObjectURL(blob);
+    this.countInAudio.src = this.countInBlobUrl;
+    this.countInAudio.preservesPitch = true;
+    this.countInAudio.defaultPlaybackRate = this.audio.playbackRate || 1;
+    this.countInAudio.playbackRate = this.audio.playbackRate || 1;
+    this.countInAudio.muted = this.audio.muted;
+    this.countInAudio.load();
+  }
+
+  public getCountInStartChartMs(): number {
+    return this.firstNoteChartMs - this.countInDurationMs;
+  }
+
+  public getCountInDurationMs(): number {
+    return this.countInDurationMs;
+  }
+
+  public getCountInBeatInfo(
+    currentAudioTimeMs = this.getCurrentAudioTimeMs(),
+  ): {
+    active: boolean;
+    beatNumber: number;
+    countdownNumber: number;
+    totalBeats: number;
+  } {
+    const startMs = this.getCountInStartChartMs();
+    const active =
+      this.inCountIn &&
+      currentAudioTimeMs >= startMs - 50 &&
+      currentAudioTimeMs < this.firstNoteChartMs - 20;
+    const elapsedMs = Math.max(0, currentAudioTimeMs - startMs);
+    const beatDurMs = this.countInDurationMs / COUNT_IN_BEATS;
+    const beatIndex = Math.min(
+      COUNT_IN_BEATS - 1,
+      Math.max(0, Math.floor(elapsedMs / beatDurMs)),
+    );
+    return {
+      active,
+      beatNumber: beatIndex + 1,
+      countdownNumber: COUNT_IN_BEATS - beatIndex,
+      totalBeats: COUNT_IN_BEATS,
+    };
   }
 
   /**
@@ -443,7 +558,39 @@ export class AudioClock {
   public getCurrentAudioTimeMs(): number {
     const audio = this.audio;
     const globalOffsetMs = this.globalOffsetMs;
-    const currentAudioTimeMs = (audio.currentTime * 1000) + globalOffsetMs;
+
+    if (this.inCountIn) {
+      const elapsedCountInMs = this.countInAudio.currentTime * 1000;
+      const countInChartMs = this.getCountInStartChartMs() + elapsedCountInMs;
+      const desiredAudioMs = countInChartMs - globalOffsetMs;
+
+      if (!this.countInAudio.paused && !this.countInAudio.ended) {
+        if (desiredAudioMs >= 0 && audio.paused && !audio.ended) {
+          try {
+            audio.currentTime = Math.max(0, desiredAudioMs / 1000);
+          } catch {
+            // Ignore seek errors
+          }
+          void audio.play().catch(() => {});
+        }
+      }
+
+      if (
+        this.countInAudio.ended ||
+        elapsedCountInMs >= this.countInDurationMs
+      ) {
+        this.inCountIn = false;
+        return audio.currentTime * 1000 + globalOffsetMs;
+      }
+
+      if (!audio.paused) {
+        return audio.currentTime * 1000 + globalOffsetMs;
+      }
+
+      return countInChartMs;
+    }
+
+    const currentAudioTimeMs = audio.currentTime * 1000 + globalOffsetMs;
     return currentAudioTimeMs;
   }
 
@@ -525,6 +672,47 @@ export class AudioClock {
   }
 
   public async play(): Promise<void> {
+    if (this.inCountIn) {
+      const elapsedCountInMs = this.countInAudio.currentTime * 1000;
+      const countInChartMs = this.getCountInStartChartMs() + elapsedCountInMs;
+      const desiredAudioMs = countInChartMs - this.globalOffsetMs;
+
+      if (desiredAudioMs >= 0) {
+        try {
+          this.audio.currentTime = desiredAudioMs / 1000;
+        } catch {
+          // Ignore seek errors
+        }
+        try {
+          await Promise.all([this.countInAudio.play(), this.audio.play()]);
+        } catch (err) {
+          console.warn('Audio playback blocked or failed:', err);
+        }
+      } else {
+        // Unlock main audio element during user gesture so it can start seamlessly when desiredAudioMs >= 0
+        const prevMuted = this.audio.muted;
+        this.audio.muted = true;
+        try {
+          await this.audio.play();
+          this.audio.pause();
+          this.audio.currentTime = 0;
+        } catch {
+          // Ignore unlock errors
+        } finally {
+          this.audio.muted = prevMuted;
+        }
+
+        try {
+          await this.countInAudio.play();
+        } catch (err) {
+          console.warn('Count-in playback blocked or failed:', err);
+        }
+      }
+      this.notifyStateChange();
+      this.updateDebugHud();
+      return;
+    }
+
     try {
       await this.audio.play();
     } catch (err) {
@@ -535,6 +723,7 @@ export class AudioClock {
   }
 
   public pause(): void {
+    this.countInAudio.pause();
     this.audio.pause();
     this.notifyStateChange();
     this.updateDebugHud();
@@ -554,7 +743,10 @@ export class AudioClock {
   }
 
   public isPlaying(): boolean {
-    return !this.audio.paused && !this.audio.ended;
+    const countInPlaying =
+      this.inCountIn && !this.countInAudio.paused && !this.countInAudio.ended;
+    const mainPlaying = !this.audio.paused && !this.audio.ended;
+    return countInPlaying || mainPlaying;
   }
 
   public isUsingSynthFallback(): boolean {
@@ -562,22 +754,32 @@ export class AudioClock {
   }
 
   public getPlaybackState(): PlaybackState {
-    if (this.audio.ended) return 'ENDED';
-    if (!this.audio.paused) {
+    if (this.audio.ended && !this.inCountIn) return 'ENDED';
+    if (this.isPlaying()) {
       return this.isSynthFallback ? 'SYNTH_FALLBACK' : 'PLAYING';
     }
     return 'PAUSED';
   }
 
   /**
-   * Resets the master audio element to the very beginning of the audio recording (`audio.currentTime = 0`).
-   * With `globalOffsetMs < 0` (e.g. -3108ms), `getCurrentAudioTimeMs()` starts at `-3108ms`,
-   * placing the first tab note (`timeMs = 0`) up on the highway so it travels down and lands
-   * on the target fretboard at the exact moment the first audio note plays.
+   * Resets to the start of the 8-beat count-in (`firstNoteChartMs - countInDurationMs`)
+   * so the player always gets a full 8-beat count-in before the song begins.
    */
   public resetToTrackStart(): void {
+    this.countInAudio.pause();
+    this.audio.pause();
+    this.inCountIn = true;
     try {
-      this.audio.currentTime = 0;
+      this.countInAudio.currentTime = 0;
+    } catch {
+      // Ignore seek errors before metadata is ready
+    }
+    const startAudioSec = Math.max(
+      0,
+      (this.getCountInStartChartMs() - this.globalOffsetMs) / 1000,
+    );
+    try {
+      this.audio.currentTime = startAudioSec;
     } catch {
       // Ignore seek errors before media metadata is ready
     }
@@ -588,6 +790,8 @@ export class AudioClock {
    * Seeks the underlying HTMLAudioElement so `getCurrentAudioTimeMs()` equals `targetChartTimeMs`.
    */
   public seekToMs(targetChartTimeMs: number): void {
+    this.inCountIn = false;
+    this.countInAudio.pause();
     const targetAudioSec = Math.max(
       0,
       (targetChartTimeMs - this.globalOffsetMs) / 1000,
@@ -628,6 +832,9 @@ export class AudioClock {
     this.audio.preservesPitch = true;
     this.audio.defaultPlaybackRate = clamped;
     this.audio.playbackRate = clamped;
+    this.countInAudio.preservesPitch = true;
+    this.countInAudio.defaultPlaybackRate = clamped;
+    this.countInAudio.playbackRate = clamped;
     this.updateDebugHud();
   }
 
@@ -637,6 +844,7 @@ export class AudioClock {
 
   public setMuted(muted: boolean): void {
     this.audio.muted = muted;
+    this.countInAudio.muted = muted;
   }
 
   public isMuted(): boolean {
@@ -688,14 +896,7 @@ export class AudioClock {
     if (existing) {
       this.debugHudEl = existing;
       this.updateDebugHud();
-      return;
     }
-
-    const hud = document.createElement('div');
-    hud.id = 'clock-debug-hud';
-    document.body.appendChild(hud);
-    this.debugHudEl = hud;
-    this.updateDebugHud();
   }
 
   public updateDebugHud(): void {
@@ -719,9 +920,17 @@ export class AudioClock {
     }
   }
 
+  private cleanupCountInBlob(): void {
+    if (this.countInBlobUrl) {
+      URL.revokeObjectURL(this.countInBlobUrl);
+      this.countInBlobUrl = null;
+    }
+  }
+
   public dispose(): void {
     window.removeEventListener('keydown', this.keydownHandler);
     this.pause();
     this.cleanupSynthBlob();
+    this.cleanupCountInBlob();
   }
 }
