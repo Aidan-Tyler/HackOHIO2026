@@ -297,7 +297,7 @@ def parse_gp_file(
                     fret_num = int(note.value)
                     if not (1 <= string_num <= 6):
                         continue
-                    fret_num = max(0, min(24, fret_num))
+                    fret_num = max(0, min(30, fret_num))
                     string_pitch_base = (
                         tuning[string_num - 1] if string_num <= len(tuning) else 40
                     )

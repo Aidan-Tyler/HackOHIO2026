@@ -308,7 +308,7 @@ async function bootstrap(): Promise<void> {
     scrubSlider.value = String(Math.round(clampedMs));
 
     const handRange = engine.getActiveHandPosition();
-    handPosEl.textContent = `Frets ${handRange.startFret}–${handRange.endFret}`;
+    handPosEl.textContent = `Frets ${handRange.startFret}–${handRange.endFret} / ${engine.getMaxFret()}`;
 
     if (!chart) return;
 
@@ -479,13 +479,12 @@ async function bootstrap(): Promise<void> {
     scrubSlider.max = String(Math.ceil(totalDurationMs));
     timeTotalEl.textContent = formatTimeMs(totalDurationMs);
     titleEl.textContent = chart.metadata.title;
+    engine.loadChart(chart);
     const synthLabel = clock.isUsingSynthFallback()
       ? ' · Web Audio Synth/Metronome'
       : '';
-    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures${synthLabel}`;
+    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${engine.getMaxFret()} Frets${synthLabel}`;
     renderSectionButtons(song);
-
-    engine.loadChart(chart);
     speedValueEl.textContent = `${engine.getSpeed().toFixed(1)} u/s`;
     resetSongToStart();
 

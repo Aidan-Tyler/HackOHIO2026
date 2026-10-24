@@ -2,8 +2,10 @@ import * as THREE from 'three';
 import type { ChartData, ChartMeasure, ChartNote } from '../types/chart';
 import {
   DEFAULT_HIGHWAY_CONFIG,
+  MIN_DYNAMIC_FRET_COUNT,
   STRING_RAILS,
   computeActiveHandPosition,
+  computeDynamicFretboardConfig,
   durationToWorldZ,
   extractChordClusters,
   fretToWorldX,
@@ -27,8 +29,10 @@ import {
 
 export {
   DEFAULT_HIGHWAY_CONFIG,
+  MIN_DYNAMIC_FRET_COUNT,
   STRING_RAILS,
   computeActiveHandPosition,
+  computeDynamicFretboardConfig,
   durationToWorldZ,
   extractChordClusters,
   fretToWorldX,
@@ -86,14 +90,15 @@ interface BeatLineRenderObject {
 }
 
 /** Standard fret markers shown below the target fretboard */
-const STANDARD_FRET_LABELS = new Set([1, 2, 3, 5, 7, 9, 12, 15]);
+const STANDARD_FRET_LABELS = new Set([1, 2, 3, 5, 7, 9, 12, 15, 17, 19, 21, 24, 27, 30]);
 
 /** Upward slope (dY / d(-Z)) of the highway ramp starting from the top edge of the target fretboard */
 const HIGHWAY_SLOPE_Y = 0.22;
 
 export class HighwayEngine {
   private readonly container: HTMLElement;
-  private readonly config: HighwayConfig;
+  private readonly baseConfig: HighwayConfig;
+  private config: HighwayConfig;
   private readonly scene: THREE.Scene;
   private readonly camera: THREE.PerspectiveCamera;
   private readonly renderer: THREE.WebGLRenderer;
@@ -153,7 +158,8 @@ export class HighwayEngine {
     callbacks: HighwayCallbacks = {},
   ) {
     this.container = container;
-    this.config = { ...DEFAULT_HIGHWAY_CONFIG, ...config };
+    this.baseConfig = { ...DEFAULT_HIGHWAY_CONFIG, ...config };
+    this.config = { ...this.baseConfig };
     this.callbacks = callbacks;
     this.baseSpeedAt120Bpm = normalizeSpeedUnitsPerSec(
       this.config.speed ?? this.config.speedMultiplier,
@@ -277,10 +283,32 @@ export class HighwayEngine {
     this.backdropGroup.add(new THREE.Points(geo, mat));
   }
 
+  private isStandardFretLabel(f: number): boolean {
+    return STANDARD_FRET_LABELS.has(f) || f === this.config.maxFret;
+  }
+
+  private rebuildFretboardAndHighway(): void {
+    while (this.fretboardGroup.children.length > 0) {
+      this.fretboardGroup.remove(this.fretboardGroup.children[0]);
+    }
+    while (this.highwayRampGroup.children.length > 0) {
+      this.highwayRampGroup.remove(this.highwayRampGroup.children[0]);
+    }
+    this.handBracketGroup = new THREE.Group();
+    this.fretLabelSprites.clear();
+    this.stringRailMaterials.clear();
+    this.stringRailMeshes.clear();
+    this.stringRailPulses.clear();
+    this.lastHighlightedHandKey = '';
+
+    this.buildPinnedFretboardTargetBar();
+    this.buildPerspectiveHighwayRamp();
+  }
+
   /**
    * Builds the Target Fretboard at Z = 0:
-   * - 6 horizontal colored rails spanning X (Frets 0 to 15), String 6 (Low E Red) on top down to String 1 (High E Purple) on bottom.
-   * - Vertical metallic fret wires for frets 0 to 15 spaced along X, with numeric labels below.
+   * - 6 horizontal colored rails spanning X (Frets 0 to maxFret), String 6 (Low E Red) on top down to String 1 (High E Purple) on bottom.
+   * - Vertical metallic fret wires for frets 0 to maxFret spaced along X, with numeric labels below.
    * - Active hand position bracket: Highlighted green outline bounding the active 4-fret region.
    */
   private buildPinnedFretboardTargetBar(): void {
@@ -357,7 +385,7 @@ export class HighwayEngine {
 
       if (f >= 1) {
         const slotCenterX = fretToWorldX(f, this.config);
-        const isStandardLabel = STANDARD_FRET_LABELS.has(f);
+        const isStandardLabel = this.isStandardFretLabel(f);
         const fretSprite = this.createFretNumberSprite(
           String(f),
           isStandardLabel ? 'standard' : 'dim',
@@ -492,7 +520,7 @@ export class HighwayEngine {
     // Stagnant fret lane guide lines extending from Z=0 into -Z along the highway slope
     for (let f = 0; f <= this.config.maxFret; f++) {
       const x = fretWireToWorldX(f, this.config);
-      const isHighlight = STANDARD_FRET_LABELS.has(f) || f === 0;
+      const isHighlight = this.isStandardFretLabel(f) || f === 0;
       const points = [
         new THREE.Vector3(x, nearY, 0),
         new THREE.Vector3(x, farY, -maxDist),
@@ -506,10 +534,14 @@ export class HighwayEngine {
       this.highwayRampGroup.add(new THREE.Line(lineGeo, lineMat));
     }
 
-    // Highway floor fret number markers (3, 5, 7, 9, 12, 15) along -Z
+    // Highway floor fret number markers (3, 5, 7, 9, 12, 15, 17, 19, 21, 24, etc.) along -Z
+    const highwayMarkers = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24, 27, 30];
+    if (!highwayMarkers.includes(this.config.maxFret)) {
+      highwayMarkers.push(this.config.maxFret);
+    }
     for (const zMarker of [-5.5, -14.5]) {
       const markerY = this.getHighwayFloorY(zMarker) + 0.1;
-      for (const f of [3, 5, 7, 9, 12, 15]) {
+      for (const f of highwayMarkers) {
         if (f > this.config.maxFret) continue;
         const markerSprite = this.createFretNumberSprite(String(f), 'standard');
         markerSprite.position.set(
@@ -523,10 +555,22 @@ export class HighwayEngine {
   }
 
   /**
-   * Loads a parsed ChartData object, building measure/beat bars, 3D note capsules, and chord clusters.
+   * Loads a parsed ChartData object, dynamically adjusting fretboard length (maxFret)
+   * and building measure/beat bars, 3D note capsules, and chord clusters.
    */
   public loadChart(chart: ChartData): void {
     this.clearChartObjects();
+    const nextConfig = computeDynamicFretboardConfig(
+      chart.notes,
+      this.baseConfig,
+    );
+    if (
+      nextConfig.maxFret !== this.config.maxFret ||
+      nextConfig.fretSpacingX !== this.config.fretSpacingX
+    ) {
+      this.config = nextConfig;
+      this.rebuildFretboardAndHighway();
+    }
     this.chartNotes = chart.notes;
     this.chartMeasures = chart.measures;
     this.scoring.loadNotes(chart.notes);
@@ -621,12 +665,16 @@ export class HighwayEngine {
    *    when the note is in the active lookahead/hit window, matching Yousician's UI).
    */
   private buildNoteObjects(notes: ChartNote[]): void {
+    const fretWidthScale = Math.min(
+      1,
+      MIN_DYNAMIC_FRET_COUNT / this.config.maxFret,
+    );
     const capsuleGeo = new THREE.CapsuleGeometry(0.082, 0.24, 8, 16);
     capsuleGeo.rotateZ(Math.PI / 2);
-    capsuleGeo.scale(1, 0.85, 0.65);
+    capsuleGeo.scale(fretWidthScale, 0.85, 0.65);
 
     const slopeAngle = Math.atan(HIGHWAY_SLOPE_Y);
-    const tailGeo = new THREE.BoxGeometry(0.12, 0.032, 1.0);
+    const tailGeo = new THREE.BoxGeometry(0.12 * fretWidthScale, 0.032, 1.0);
     tailGeo.translate(0, 0, -0.5);
     tailGeo.rotateX(slopeAngle);
 
@@ -682,7 +730,7 @@ export class HighwayEngine {
       });
       const hwBadge = new THREE.Sprite(hwSpriteMat);
       hwBadge.position.set(0, 0, 0.02);
-      hwBadge.scale.set(0.38, 0.24, 1);
+      hwBadge.scale.set(0.38 * fretWidthScale, 0.24, 1);
       hwBadge.renderOrder = 10;
       highwayGroup.add(hwBadge);
 
@@ -709,7 +757,7 @@ export class HighwayEngine {
       });
       const fbBadge = new THREE.Sprite(fbSpriteMat);
       fbBadge.position.set(0, 0, 0.03);
-      fbBadge.scale.set(0.4, 0.25, 1);
+      fbBadge.scale.set(0.4 * fretWidthScale, 0.25, 1);
       fbBadge.renderOrder = 15;
       fretboardNoteGroup.add(fbBadge);
 
@@ -917,6 +965,10 @@ export class HighwayEngine {
     text: string,
     mode: 'standard' | 'active' | 'dim',
   ): THREE.Sprite {
+    const fretWidthScale = Math.min(
+      1,
+      MIN_DYNAMIC_FRET_COUNT / this.config.maxFret,
+    );
     const texture = this.getOrCreateFretNumberTexture(text, mode);
     const mat = new THREE.SpriteMaterial({
       map: texture,
@@ -924,7 +976,7 @@ export class HighwayEngine {
       depthTest: false,
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.38, 0.25, 1);
+    sprite.scale.set(0.38 * fretWidthScale, 0.25, 1);
     return sprite;
   }
 
@@ -1140,7 +1192,7 @@ export class HighwayEngine {
         const inBracket =
           f >= this.activeHandFrets.startFret &&
           f <= this.activeHandFrets.endFret;
-        const isStandard = STANDARD_FRET_LABELS.has(f);
+        const isStandard = this.isStandardFretLabel(f);
         sprite.visible = inBracket || isStandard;
         const mat = sprite.material as THREE.SpriteMaterial;
         mat.map = this.getOrCreateFretNumberTexture(
@@ -1312,6 +1364,10 @@ export class HighwayEngine {
 
   public getActiveHandPosition(): { startFret: number; endFret: number } {
     return this.activeHandFrets;
+  }
+
+  public getMaxFret(): number {
+    return this.config.maxFret;
   }
 
   public onWindowResize(): void {

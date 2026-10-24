@@ -6,7 +6,7 @@
 import type { ChartNote } from '../types/chart';
 
 export interface HighwayConfig {
-  /** Total number of frets on the pinned target fretboard (0 through 15) */
+  /** Total number of frets on the pinned target fretboard (minimum 15, dynamically expands for higher-fret songs) */
   maxFret: number;
   /** World X position of Fret 0 (the nut) */
   nutX: number;
@@ -30,8 +30,11 @@ export interface HighwayConfig {
   hitWindowMs: number;
 }
 
+export const MIN_DYNAMIC_FRET_COUNT = 15;
+export const TOTAL_FRETBOARD_SPAN_X = 15 * 0.65;
+
 export const DEFAULT_HIGHWAY_CONFIG: HighwayConfig = {
-  maxFret: 15,
+  maxFret: MIN_DYNAMIC_FRET_COUNT,
   nutX: 0.25,
   fretSpacingX: 0.65,
   stringSpacingY: 0.21,
@@ -43,6 +46,31 @@ export const DEFAULT_HIGHWAY_CONFIG: HighwayConfig = {
   despawnDist: 2.2,
   hitWindowMs: 85,
 };
+
+/**
+ * Computes the dynamic fretboard configuration for a chart's notes.
+ * Keeps a minimum of 15 frets, expanding automatically if the chart contains higher frets (e.g. 16–24+),
+ * while scaling `fretSpacingX` so the entire fretboard fits cleanly within the camera frustum.
+ */
+export function computeDynamicFretboardConfig(
+  notes: readonly ChartNote[],
+  baseConfig: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
+): HighwayConfig {
+  let highestFret = 0;
+  for (const n of notes) {
+    if (n.fret > highestFret) {
+      highestFret = Math.round(n.fret);
+    }
+  }
+  const maxFret = Math.max(MIN_DYNAMIC_FRET_COUNT, highestFret);
+  const totalSpanX = baseConfig.maxFret * baseConfig.fretSpacingX || TOTAL_FRETBOARD_SPAN_X;
+  const fretSpacingX = totalSpanX / maxFret;
+  return {
+    ...baseConfig,
+    maxFret,
+    fretSpacingX,
+  };
+}
 
 export interface StringRailSpec {
   /** Guitar string number: 6 (Low E) down to 1 (High E) */
