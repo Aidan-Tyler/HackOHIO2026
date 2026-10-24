@@ -339,7 +339,10 @@
           <option value="default">Default USB / Guitar Audio Input</option>
         </select>
         <div class="guitar-io-controls">
-          <button id="guitar-connect-btn" type="button">🎸 Enable Guitar Passthrough</button>
+          <button id="guitar-connect-btn" type="button">🎸 Connect Guitar Input</button>
+          <button id="direct-monitor-btn" class="active-guitar" type="button" title="When Direct Monitoring is ON, software speaker passthrough is muted so you hear 0ms hardware/amp monitoring while pitch detection stays active">
+            ⚡ Direct Monitor: ON
+          </button>
           <div class="speed-control">
             <label for="guitar-volume-slider">Gain:</label>
             <input

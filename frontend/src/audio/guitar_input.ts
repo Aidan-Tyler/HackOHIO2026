@@ -1,9 +1,9 @@
 /**
- * Live USB Guitar Audio Input & Low-Latency Speaker Passthrough (Web Audio API).
+ * Live USB Guitar Audio Input, Pitch Detection & Optional Low-Latency Monitoring (Web Audio API).
  *
  * Signal Graph:
- *   MediaStreamAudioSourceNode -> GainNode (volume) -> AudioContext.destination
- *                              \-> AnalyserNode (for pitch detection & level metering)
+ *   MediaStreamAudioSourceNode -> AnalyserNode (fftSize=1024, always active for pitch/hit detection)
+ *                                 \-> GainNode -> AudioContext.destination (only connected when software monitoring is enabled)
  */
 
 export interface GuitarAudioDevice {
@@ -16,6 +16,12 @@ export interface PitchDetectionResult {
   midiNote: number | null;
   noteName: string | null;
   rmsLevel: number;
+}
+
+export interface AudioLatencyDiagnostics {
+  baseLatencySec: number;
+  outputLatencySec: number;
+  sampleRate: number;
 }
 
 const NOTE_NAMES = [
@@ -101,12 +107,18 @@ export class GuitarAudioInput {
   private audioContext: AudioContext | null = null;
   private mediaStream: MediaStream | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
-  private gainNode: GainNode | null = null;
   private analyserNode: AnalyserNode | null = null;
+  private gainNode: GainNode | null = null;
   private timeDomainBuffer: Float32Array<ArrayBuffer> | null = null;
 
   private currentVolume = 0.85;
   private isConnectedState = false;
+  /**
+   * Software passthrough is disabled by default (`isMonitoring = false` / `directMonitoringMode = true`)
+   * so players using a hardware amp or audio interface direct monitoring do not hear a delayed duplicate signal.
+   */
+  private isMonitoring = false;
+  private isGainConnectedToDestination = false;
   private activeDeviceId: string | null = null;
 
   /**
@@ -126,9 +138,11 @@ export class GuitarAudioInput {
   }
 
   /**
-   * Requests low-latency raw guitar input via `getUserMedia` and connects:
-   * MediaStreamAudioSourceNode -> GainNode -> AudioContext.destination
-   * plus an AnalyserNode tap for real-time pitch & level analysis.
+   * Initializes low-latency raw guitar input via `getUserMedia`.
+   * - Uses native OS/interface hardware sampleRate (no hardcoded sampleRate) and `latencyHint: 0`.
+   * - Connects `MediaStreamAudioSourceNode -> AnalyserNode (fftSize = 1024)` for pitch/hit detection.
+   * - Software monitoring (`AnalyserNode -> GainNode -> audioCtx.destination`) is controlled by
+   *   `setDirectMonitoringMode(enabled)`.
    */
   public async startPassthrough(deviceId?: string): Promise<GuitarAudioDevice[]> {
     this.stopPassthrough();
@@ -149,35 +163,87 @@ export class GuitarAudioInput {
       video: false,
     });
 
-    this.audioContext = new AudioContext({ latencyHint: 'interactive' });
+    // Omit sampleRate so AudioContext natively locks to the hardware interface clock;
+    // set latencyHint: 0 ("interactive" minimum hardware buffer)
+    this.audioContext = new AudioContext({ latencyHint: 0 });
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
     }
 
+    // Log hardware buffer latency diagnostics
+    console.info('[GuitarAudioInput] AudioContext initialized:', {
+      baseLatency: this.audioContext.baseLatency,
+      outputLatency: this.audioContext.outputLatency,
+      sampleRate: this.audioContext.sampleRate,
+    });
+
     this.sourceNode = this.audioContext.createMediaStreamSource(
       this.mediaStream,
     );
-    this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = this.currentVolume;
 
+    // Reduced fftSize (1024) to minimize analysis buffer overhead while supporting down to E2 (82.4 Hz)
     this.analyserNode = this.audioContext.createAnalyser();
-    this.analyserNode.fftSize = 2048;
-    this.analyserNode.smoothingTimeConstant = 0.2;
+    this.analyserNode.fftSize = 1024;
+    this.analyserNode.smoothingTimeConstant = 0.1;
     this.timeDomainBuffer = new Float32Array(
       new ArrayBuffer(this.analyserNode.fftSize * Float32Array.BYTES_PER_ELEMENT),
     );
 
-    // Route: Source -> Gain -> Destination (live low-latency speaker passthrough)
-    this.sourceNode.connect(this.gainNode);
-    this.gainNode.connect(this.audioContext.destination);
+    this.gainNode = this.audioContext.createGain();
+    this.gainNode.gain.value = this.currentVolume;
 
-    // Tap: Source -> AnalyserNode (for pitch detection)
+    // Always connect Source -> AnalyserNode -> GainNode
     this.sourceNode.connect(this.analyserNode);
+    this.analyserNode.connect(this.gainNode);
+
+    // Apply current Direct Monitoring / Software Passthrough routing state
+    this.applyMonitoringRouting();
 
     this.isConnectedState = true;
     this.activeDeviceId = deviceId ?? 'default';
 
     return this.listInputDevices();
+  }
+
+  /**
+   * Toggles Direct Hardware Monitoring mode vs. Software Passthrough:
+   * - When Direct Monitoring is ON (`enabled = true`):
+   *   Software passthrough is muted (`gainNode` disconnected from `audioCtx.destination`, `isMonitoring = false`),
+   *   while the stream remains actively connected to `AnalyserNode` for pitch/hit detection (0ms perceived latency).
+   * - When Direct Monitoring is OFF (`enabled = false`):
+   *   Enables the low-latency software monitoring route (`AnalyserNode -> GainNode -> audioCtx.destination`, `isMonitoring = true`).
+   */
+  public setDirectMonitoringMode(enabled: boolean): void {
+    this.isMonitoring = !enabled;
+    this.applyMonitoringRouting();
+  }
+
+  public isDirectMonitoringMode(): boolean {
+    return !this.isMonitoring;
+  }
+
+  public isSoftwareMonitoringEnabled(): boolean {
+    return this.isMonitoring;
+  }
+
+  private applyMonitoringRouting(): void {
+    if (!this.gainNode || !this.audioContext) {
+      this.isGainConnectedToDestination = false;
+      return;
+    }
+
+    if (this.isMonitoring && !this.isGainConnectedToDestination) {
+      this.gainNode.connect(this.audioContext.destination);
+      this.isGainConnectedToDestination = true;
+    } else if (!this.isMonitoring && this.isGainConnectedToDestination) {
+      try {
+        this.gainNode.disconnect(this.audioContext.destination);
+      } catch {
+        // Fallback if selective disconnect is unsupported
+        this.gainNode.disconnect();
+      }
+      this.isGainConnectedToDestination = false;
+    }
   }
 
   public stopPassthrough(): void {
@@ -189,14 +255,6 @@ export class GuitarAudioInput {
       }
       this.sourceNode = null;
     }
-    if (this.gainNode) {
-      try {
-        this.gainNode.disconnect();
-      } catch {
-        // Ignore disconnect errors
-      }
-      this.gainNode = null;
-    }
     if (this.analyserNode) {
       try {
         this.analyserNode.disconnect();
@@ -205,6 +263,16 @@ export class GuitarAudioInput {
       }
       this.analyserNode = null;
     }
+    if (this.gainNode) {
+      try {
+        this.gainNode.disconnect();
+      } catch {
+        // Ignore disconnect errors
+      }
+      this.gainNode = null;
+    }
+    this.isGainConnectedToDestination = false;
+
     if (this.mediaStream) {
       for (const track of this.mediaStream.getTracks()) {
         track.stop();
@@ -225,7 +293,7 @@ export class GuitarAudioInput {
       this.gainNode.gain.setTargetAtTime(
         this.currentVolume,
         this.audioContext.currentTime,
-        0.01,
+        0.008,
       );
     }
   }
@@ -244,6 +312,15 @@ export class GuitarAudioInput {
 
   public getAnalyserNode(): AnalyserNode | null {
     return this.analyserNode;
+  }
+
+  public getLatencyDiagnostics(): AudioLatencyDiagnostics | null {
+    if (!this.audioContext) return null;
+    return {
+      baseLatencySec: this.audioContext.baseLatency ?? 0,
+      outputLatencySec: this.audioContext.outputLatency ?? 0,
+      sampleRate: this.audioContext.sampleRate,
+    };
   }
 
   /**

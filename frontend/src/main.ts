@@ -73,6 +73,9 @@ async function bootstrap(): Promise<void> {
   const guitarConnectBtn = document.getElementById(
     'guitar-connect-btn',
   ) as HTMLButtonElement;
+  const directMonitorBtn = document.getElementById(
+    'direct-monitor-btn',
+  ) as HTMLButtonElement;
   const guitarVolumeSlider = document.getElementById(
     'guitar-volume-slider',
   ) as HTMLInputElement;
@@ -250,11 +253,26 @@ async function bootstrap(): Promise<void> {
     updateHud(currentTimeMs);
   });
 
-  // Live USB Guitar Input & Speaker Passthrough Controls
+  // Live USB Guitar Input & Direct Hardware Monitoring Controls
+  function syncDirectMonitorButton(): void {
+    const isDirect = guitarInput.isDirectMonitoringMode();
+    directMonitorBtn.textContent = isDirect
+      ? '⚡ Direct Monitor: ON'
+      : '🔊 SW Passthrough: ON';
+    directMonitorBtn.classList.toggle('active-guitar', isDirect);
+  }
+  syncDirectMonitorButton();
+
+  directMonitorBtn.addEventListener('click', () => {
+    const nextDirect = !guitarInput.isDirectMonitoringMode();
+    guitarInput.setDirectMonitoringMode(nextDirect);
+    syncDirectMonitorButton();
+  });
+
   guitarConnectBtn.addEventListener('click', async () => {
     if (guitarInput.isActive()) {
       guitarInput.stopPassthrough();
-      guitarConnectBtn.textContent = '🎸 Enable Guitar Passthrough';
+      guitarConnectBtn.textContent = '🎸 Connect Guitar Input';
       guitarConnectBtn.classList.remove('active-guitar');
       guitarPitchBadge.textContent = 'Off';
       guitarLevelFill.style.width = '0%';
@@ -265,7 +283,7 @@ async function bootstrap(): Promise<void> {
       const selectedDevice = inputDeviceSelect.value || undefined;
       await guitarInput.startPassthrough(selectedDevice);
       await refreshAudioDeviceOptions();
-      guitarConnectBtn.textContent = '🟢 Guitar Live (Passthrough ON)';
+      guitarConnectBtn.textContent = '🟢 Guitar Input Active';
       guitarConnectBtn.classList.add('active-guitar');
     } catch (err) {
       console.error('Guitar input error:', err);
