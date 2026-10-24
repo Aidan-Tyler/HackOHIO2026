@@ -7,7 +7,11 @@ import {
   type ChartNote,
 } from './types/chart';
 import { MainMenu } from './menu/main_menu';
-import { fetchSongLibrary, type SongEntry } from './menu/song_library';
+import {
+  fetchImportedSongs,
+  fetchSongLibrary,
+  type SongEntry,
+} from './menu/song_library';
 
 function formatTimeMs(ms: number): string {
   const clamped = Math.max(0, ms);
@@ -48,6 +52,13 @@ async function bootstrap(): Promise<void> {
     'restart-btn',
   ) as HTMLButtonElement;
   const menuBtn = document.getElementById('menu-btn') as HTMLButtonElement;
+  const syncEarlierBtn = document.getElementById(
+    'sync-earlier-btn',
+  ) as HTMLButtonElement;
+  const syncLaterBtn = document.getElementById(
+    'sync-later-btn',
+  ) as HTMLButtonElement;
+  const syncValueEl = document.getElementById('sync-value')!;
   const sectionJumpGroup = document.getElementById('section-jump-group')!;
   const backingMuteBtn = document.getElementById(
     'backing-mute-btn',
@@ -99,6 +110,12 @@ async function bootstrap(): Promise<void> {
   });
 
   let chart: ChartData | null = null;
+  let currentSong: SongEntry | null = null;
+  // Player's manual sync correction on top of the song's auto-detected offset.
+  // Positive = audio plays later relative to the notes.
+  let audioDelayMs = 0;
+  // True while backingAudio.play() is resolving, so the animate loop doesn't re-trigger it
+  let audioStarting = false;
   let isPlaying = false;
   let currentTimeMs = 0;
   let totalDurationMs = 228500;
@@ -159,15 +176,48 @@ async function bootstrap(): Promise<void> {
     }
   }
 
+  // offset_ms sync: audio_time_ms = chart_time_ms + offset_ms
+  function syncOffsetMs(): number {
+    return (currentSong?.offsetMs ?? 0) - audioDelayMs;
+  }
+
+  function hasBackingTrack(): boolean {
+    return Boolean(currentSong?.audioUrl) && audioReady;
+  }
+
+  /**
+   * Moves the backing track to match `currentTimeMs` and starts it if playing.
+   * When the chart time maps to before the recording starts (negative audio time),
+   * the audio waits at 0 and the animate loop starts it once the lead-in has passed.
+   */
+  function syncAudioToChart(): void {
+    if (!hasBackingTrack()) return;
+    const targetSec = (currentTimeMs + syncOffsetMs()) / 1000;
+    if (targetSec < 0 || targetSec >= backingAudio.duration) {
+      backingAudio.pause();
+      return;
+    }
+    try {
+      backingAudio.currentTime = targetSec;
+    } catch {
+      // Ignore seek errors before metadata is loaded
+    }
+    if (isPlaying && backingAudio.paused && !audioStarting) {
+      audioStarting = true;
+      backingAudio
+        .play()
+        .catch(() => {
+          // Playback blocked or unavailable: the animate loop keeps a simulated clock
+        })
+        .finally(() => {
+          audioStarting = false;
+        });
+    }
+  }
+
   function seekTo(targetMs: number): void {
     currentTimeMs = Math.max(0, Math.min(totalDurationMs, targetMs));
-    if (audioReady) {
-      try {
-        backingAudio.currentTime = currentTimeMs / 1000;
-      } catch {
-        // Ignore seek errors before metadata is loaded
-      }
-    }
+    syncAudioToChart();
     engine.update(currentTimeMs);
     updateHud(currentTimeMs);
   }
@@ -179,14 +229,34 @@ async function bootstrap(): Promise<void> {
     playPauseBtn.classList.toggle('active', isPlaying);
 
     if (isPlaying) {
-      try {
-        backingAudio.currentTime = currentTimeMs / 1000;
-        await backingAudio.play();
-      } catch {
-        // Fallback to simulated clock if audio playback is blocked or unavailable
-      }
+      syncAudioToChart();
     } else {
       backingAudio.pause();
+    }
+  }
+
+  function syncDelayStorageKey(): string | null {
+    return currentSong ? `audio-delay-ms:${currentSong.id}` : null;
+  }
+
+  function setAudioDelay(delayMs: number): void {
+    audioDelayMs = delayMs;
+    syncValueEl.textContent = `${delayMs > 0 ? '+' : ''}${delayMs} ms`;
+    const key = syncDelayStorageKey();
+    try {
+      if (key) localStorage.setItem(key, String(delayMs));
+    } catch {
+      // Storage unavailable (private window etc.); the nudge just won't persist
+    }
+    if (isPlaying) syncAudioToChart();
+  }
+
+  function loadAudioDelay(): number {
+    const key = syncDelayStorageKey();
+    try {
+      return key ? Number(localStorage.getItem(key)) || 0 : 0;
+    } catch {
+      return 0;
     }
   }
 
@@ -213,29 +283,29 @@ async function bootstrap(): Promise<void> {
     const rawJson = (await response.json()) as Record<string, unknown>;
     chart = normalizeChart(rawJson);
 
+    currentSong = song;
+    setAudioDelay(loadAudioDelay());
     audioReady = false;
-    backingAudio.src = song.audioUrl;
+    if (song.audioUrl) {
+      backingAudio.src = song.audioUrl;
+    } else {
+      // Imported tabs have no backing track yet; the animate loop falls back to a simulated clock
+      backingAudio.removeAttribute('src');
+    }
     backingAudio.load();
 
     totalDurationMs = chart.metadata.totalDurationMs || song.durationMs;
     scrubSlider.max = String(Math.ceil(totalDurationMs));
     timeTotalEl.textContent = formatTimeMs(totalDurationMs);
     titleEl.textContent = chart.metadata.title;
-    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures`;
+    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures${song.audioUrl ? '' : ' · No backing track'}`;
     renderSectionButtons(song);
 
     engine.loadChart(chart);
     seekTo(0);
   }
 
-  const menu = new MainMenu({
-    onPlay: loadSong,
-    onImportLink: async () => {
-      // TODO: POST the link to the backend pipeline (tab fetch + audio sync),
-      // then add the returned SongEntry to the library.
-      throw new Error('Importing from a link is not wired up to the backend yet.');
-    },
-  });
+  const menu = new MainMenu({ onPlay: loadSong });
 
   function openMenu(): void {
     void setPlaying(false);
@@ -244,7 +314,11 @@ async function bootstrap(): Promise<void> {
 
   menu.show();
   try {
-    menu.setSongs(await fetchSongLibrary());
+    const [bundled, imported] = await Promise.all([
+      fetchSongLibrary(),
+      fetchImportedSongs(),
+    ]);
+    menu.setSongs([...bundled, ...imported]);
   } catch (err) {
     console.error('Failed to load song library:', err);
     menu.setSongs([]);
@@ -265,6 +339,10 @@ async function bootstrap(): Promise<void> {
   });
 
   menuBtn.addEventListener('click', openMenu);
+
+  const SYNC_STEP_MS = 20;
+  syncEarlierBtn.addEventListener('click', () => setAudioDelay(audioDelayMs - SYNC_STEP_MS));
+  syncLaterBtn.addEventListener('click', () => setAudioDelay(audioDelayMs + SYNC_STEP_MS));
 
   backingMuteBtn.addEventListener('click', () => {
     backingAudio.muted = !backingAudio.muted;
@@ -326,6 +404,10 @@ async function bootstrap(): Promise<void> {
     } else if (e.code === 'Space' && e.target === document.body) {
       e.preventDefault();
       void setPlaying(!isPlaying);
+    } else if (e.code === 'BracketLeft') {
+      setAudioDelay(audioDelayMs - SYNC_STEP_MS);
+    } else if (e.code === 'BracketRight') {
+      setAudioDelay(audioDelayMs + SYNC_STEP_MS);
     } else if (e.code === 'ArrowRight') {
       seekTo(currentTimeMs + 2000);
     } else if (e.code === 'ArrowLeft') {
@@ -336,11 +418,22 @@ async function bootstrap(): Promise<void> {
   // Main requestAnimationFrame loop synced to HTMLAudioElement.currentTime
   function animate(timestamp: number): void {
     if (isPlaying) {
-      if (!backingAudio.paused && audioReady) {
-        currentTimeMs = backingAudio.currentTime * 1000;
-      } else if (lastFrameTimestamp !== null) {
-        const deltaMs = timestamp - lastFrameTimestamp;
-        currentTimeMs = Math.min(totalDurationMs, currentTimeMs + deltaMs);
+      if (!backingAudio.paused && hasBackingTrack()) {
+        currentTimeMs = backingAudio.currentTime * 1000 - syncOffsetMs();
+      } else {
+        if (lastFrameTimestamp !== null) {
+          const deltaMs = timestamp - lastFrameTimestamp;
+          currentTimeMs = Math.min(totalDurationMs, currentTimeMs + deltaMs);
+        }
+        // Lead-in over (or audio just finished loading): bring the backing track in
+        if (
+          hasBackingTrack() &&
+          !audioStarting &&
+          !backingAudio.ended &&
+          currentTimeMs + syncOffsetMs() >= 0
+        ) {
+          syncAudioToChart();
+        }
       }
 
       engine.update(currentTimeMs);

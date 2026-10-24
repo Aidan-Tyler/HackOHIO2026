@@ -537,18 +537,45 @@
       }
 
       #menu-status,
-      #menu-import-status {
+      #menu-search-status {
         font-size: 0.78rem;
         color: var(--m-dim);
       }
 
-      #menu-import-form {
+      #menu-audio-status {
+        margin-top: 12px;
+        font-size: 0.76rem;
+        color: var(--m-dim);
+      }
+
+      .audio-pending {
+        color: var(--m-ink);
+      }
+
+      #main-menu button.menu-link-btn {
+        color: var(--m-accent);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        margin-left: 6px;
+      }
+
+      .audio-tag {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+
+      .audio-tag.pending {
+        color: var(--m-accent);
+      }
+
+      #menu-search-form {
         display: flex;
         gap: 14px;
         margin-top: 16px;
       }
 
-      #menu-import-input {
+      #menu-search-input {
         flex: 1;
         min-width: 0;
         background: transparent;
@@ -560,16 +587,16 @@
         font-size: 0.88rem;
       }
 
-      #menu-import-input::placeholder {
+      #menu-search-input::placeholder {
         color: var(--m-dim);
       }
 
-      #menu-import-input:focus {
+      #menu-search-input:focus {
         outline: none;
         border-bottom-color: var(--m-accent);
       }
 
-      #main-menu button.menu-import-btn {
+      #main-menu button.menu-search-btn {
         font-size: 0.78rem;
         text-transform: uppercase;
         letter-spacing: 0.12em;
@@ -577,13 +604,68 @@
         border: 1px solid var(--m-ink);
       }
 
-      #main-menu button.menu-import-btn:hover {
+      #main-menu button.menu-search-btn:hover {
         background: var(--m-ink);
         color: var(--m-bg);
       }
 
-      #menu-import-status {
+      #menu-search-status {
         margin-top: 10px;
+      }
+
+      #menu-search-results {
+        display: flex;
+        flex-direction: column;
+        max-height: 34vh;
+        overflow-y: auto;
+        margin-top: 8px;
+      }
+
+      #main-menu button.search-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 4px;
+        border-bottom: 1px solid var(--m-line);
+      }
+
+      #main-menu button.search-row:hover:not(:disabled) {
+        background: var(--m-row);
+      }
+
+      #main-menu button.search-row:disabled {
+        cursor: progress;
+      }
+
+      .search-row-name {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 2px 12px;
+        min-width: 0;
+      }
+
+      .search-row-title {
+        font-size: 0.9rem;
+        color: var(--m-ink);
+      }
+
+      .search-row-artist {
+        font-size: 0.76rem;
+        color: var(--m-dim);
+      }
+
+      .search-row-action {
+        flex-shrink: 0;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--m-accent);
+      }
+
+      .search-row.added .search-row-action {
+        color: var(--m-dim);
       }
 
       .menu-hint {
@@ -699,6 +781,16 @@
           <button id="backing-mute-btn" type="button">🔊 Backing: ON</button>
         </div>
 
+        <div
+          class="speed-control"
+          title="If the music is ahead of or behind the notes, nudge it here ([ and ] keys)"
+        >
+          <span>Audio Sync:</span>
+          <button id="sync-earlier-btn" type="button" aria-label="Play audio earlier">−</button>
+          <span id="sync-value" class="time-badge">0 ms</span>
+          <button id="sync-later-btn" type="button" aria-label="Play audio later">+</button>
+        </div>
+
         <div class="speed-control">
           <label for="speed-slider">Highway Speed:</label>
           <input
@@ -734,23 +826,26 @@
             <button id="menu-play-btn" type="button" disabled>Play</button>
             <div id="menu-status" role="status"></div>
           </div>
+          <div id="menu-audio-status" role="status"></div>
         </section>
 
         <section>
           <div class="menu-section-head">
-            <h2>Add a Song</h2>
-            <span>Paste a tab or song link</span>
+            <h2>Find a Song</h2>
+            <span>Tabs from GProTab.net</span>
           </div>
-          <form id="menu-import-form">
+          <form id="menu-search-form" role="search">
             <input
-              id="menu-import-input"
-              type="url"
-              placeholder="https://…"
-              aria-label="Song or tab link"
+              id="menu-search-input"
+              type="search"
+              placeholder="Song, artist, or both: “seven nation army white stripes”"
+              aria-label="Search for a song or artist"
+              autocomplete="off"
             />
-            <button class="menu-import-btn" type="submit">Import</button>
+            <button class="menu-search-btn" type="submit">Search</button>
           </form>
-          <div id="menu-import-status" role="status"></div>
+          <div id="menu-search-status" role="status"></div>
+          <div id="menu-search-results"></div>
         </section>
 
         <footer class="menu-hint">

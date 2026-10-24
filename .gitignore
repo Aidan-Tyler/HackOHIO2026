@@ -8,6 +8,7 @@ __pycache__/
 
 # Data & Large Media
 backend/data/raw_gp5/*.gp5
+backend/data/raw_gp5/gprotab-*
 backend/data/audio/*
 backend/data/charts/*.json
 !backend/data/raw_gp5/.gitkeep

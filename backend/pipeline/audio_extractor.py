@@ -23,12 +23,18 @@ def _is_url(target: str) -> bool:
 
 
 def _find_ffmpeg() -> str | None:
-    """Locates ffmpeg on PATH or standard macOS/Homebrew directories."""
+    """Locates ffmpeg on PATH, standard macOS/Homebrew directories, or the static
+    binary bundled with the `imageio-ffmpeg` pip package."""
     for candidate in ("ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
         resolved = shutil.which(candidate)
         if resolved:
             return resolved
-    return None
+    try:
+        import imageio_ffmpeg
+
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError, RuntimeError):
+        return None
 
 
 def download_youtube_audio(
@@ -58,7 +64,8 @@ def download_youtube_audio(
     }
 
     if ffmpeg_bin:
-        ydl_opts["ffmpeg_location"] = str(Path(ffmpeg_bin).parent)
+        # Pass the binary itself: imageio-ffmpeg's binary isn't named plain `ffmpeg`
+        ydl_opts["ffmpeg_location"] = ffmpeg_bin
         ydl_opts["postprocessors"] = [
             {
                 "key": "FFmpegExtractAudio",

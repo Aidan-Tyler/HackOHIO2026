@@ -10,6 +10,7 @@
       "bpm": 120,
       "tuning": "Open A",
       "difficulty": 1,
+      "offsetMs": 0,
       "sections": [
         { "label": "Riff", "timeMs": 0 },
         { "label": "Chords", "timeMs": 52000 }
