@@ -1,0 +1,19 @@
+{
+  "songs": [
+    {
+      "id": "white-stripes-seven_nation_army",
+      "title": "Seven Nation Army",
+      "artist": "The White Stripes",
+      "chartUrl": "/charts/white-stripes-seven_nation_army.json",
+      "audioUrl": "/audio/white-stripes-seven_nation_army_backing.mp3",
+      "durationMs": 228500,
+      "bpm": 120,
+      "tuning": "Open A",
+      "difficulty": 1,
+      "sections": [
+        { "label": "Riff", "timeMs": 0 },
+        { "label": "Chords", "timeMs": 52000 }
+      ]
+    }
+  ]
+}

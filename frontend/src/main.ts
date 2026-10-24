@@ -6,9 +6,8 @@ import {
   type ChartMeasure,
   type ChartNote,
 } from './types/chart';
-
-const CHART_URL = '/charts/white-stripes-seven_nation_army.json';
-const BACKING_AUDIO_URL = '/audio/white-stripes-seven_nation_army_backing.mp3';
+import { MainMenu } from './menu/main_menu';
+import { fetchSongLibrary, type SongEntry } from './menu/song_library';
 
 function formatTimeMs(ms: number): string {
   const clamped = Math.max(0, ms);
@@ -48,9 +47,8 @@ async function bootstrap(): Promise<void> {
   const restartBtn = document.getElementById(
     'restart-btn',
   ) as HTMLButtonElement;
-  const jumpChorusBtn = document.getElementById(
-    'jump-chorus-btn',
-  ) as HTMLButtonElement;
+  const menuBtn = document.getElementById('menu-btn') as HTMLButtonElement;
+  const sectionJumpGroup = document.getElementById('section-jump-group')!;
   const backingMuteBtn = document.getElementById(
     'backing-mute-btn',
   ) as HTMLButtonElement;
@@ -92,8 +90,8 @@ async function bootstrap(): Promise<void> {
   const engine = new HighwayEngine(viewportEl);
   const guitarInput = new GuitarAudioInput();
 
-  // HTMLAudioElement for Backing Track Sync
-  const backingAudio = new Audio(BACKING_AUDIO_URL);
+  // HTMLAudioElement for Backing Track Sync (src is set per song in loadSong)
+  const backingAudio = new Audio();
   backingAudio.preload = 'auto';
   let audioReady = false;
   backingAudio.addEventListener('canplay', () => {
@@ -192,30 +190,70 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  // Load chart JSON on startup
-  try {
-    const response = await fetch(CHART_URL);
+  function renderSectionButtons(song: SongEntry): void {
+    sectionJumpGroup.innerHTML = '';
+    for (const section of song.sections) {
+      if (section.timeMs <= 0) continue; // Restart already covers 0:00
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = `⚡ ${formatTimeMs(section.timeMs).slice(0, -2)} (${section.label})`;
+      btn.addEventListener('click', () => seekTo(section.timeMs));
+      sectionJumpGroup.appendChild(btn);
+    }
+  }
+
+  // Fetch a song's chart JSON + backing track and load it onto the highway
+  async function loadSong(song: SongEntry): Promise<void> {
+    await setPlaying(false);
+
+    const response = await fetch(song.chartUrl);
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${CHART_URL}`);
+      throw new Error(`HTTP ${response.status} fetching ${song.chartUrl}`);
     }
     const rawJson = (await response.json()) as Record<string, unknown>;
     chart = normalizeChart(rawJson);
 
-    totalDurationMs = chart.metadata.totalDurationMs || 228500;
+    audioReady = false;
+    backingAudio.src = song.audioUrl;
+    backingAudio.load();
+
+    totalDurationMs = chart.metadata.totalDurationMs || song.durationMs;
     scrubSlider.max = String(Math.ceil(totalDurationMs));
     timeTotalEl.textContent = formatTimeMs(totalDurationMs);
     titleEl.textContent = chart.metadata.title;
     artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures`;
+    renderSectionButtons(song);
 
     engine.loadChart(chart);
     seekTo(0);
+  }
+
+  const menu = new MainMenu({
+    onPlay: loadSong,
+    onImportLink: async () => {
+      // TODO: POST the link to the backend pipeline (tab fetch + audio sync),
+      // then add the returned SongEntry to the library.
+      throw new Error('Importing from a link is not wired up to the backend yet.');
+    },
+  });
+
+  function openMenu(): void {
+    void setPlaying(false);
+    menu.show();
+  }
+
+  menu.show();
+  try {
+    menu.setSongs(await fetchSongLibrary());
   } catch (err) {
-    console.error('Failed to load chart JSON:', err);
-    artistEl.textContent = `Error loading chart: ${String(err)}`;
+    console.error('Failed to load song library:', err);
+    menu.setSongs([]);
+    menu.setStatus(`Error loading song library: ${String(err)}`);
   }
 
   // Playback Controls Event Listeners
   playPauseBtn.addEventListener('click', () => {
+    if (!chart) return;
     if (currentTimeMs >= totalDurationMs) {
       seekTo(0);
     }
@@ -226,10 +264,7 @@ async function bootstrap(): Promise<void> {
     seekTo(0);
   });
 
-  jumpChorusBtn.addEventListener('click', () => {
-    // Measure 27 (52,000 ms) is where the power-chord chorus clusters hit
-    seekTo(52000);
-  });
+  menuBtn.addEventListener('click', openMenu);
 
   backingMuteBtn.addEventListener('click', () => {
     backingAudio.muted = !backingAudio.muted;
@@ -284,7 +319,11 @@ async function bootstrap(): Promise<void> {
   });
 
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'Space' && e.target === document.body) {
+    if (menu.isOpen()) return;
+
+    if (e.code === 'Escape') {
+      openMenu();
+    } else if (e.code === 'Space' && e.target === document.body) {
       e.preventDefault();
       void setPlaying(!isPlaying);
     } else if (e.code === 'ArrowRight') {
