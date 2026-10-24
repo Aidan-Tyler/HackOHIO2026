@@ -1,0 +1,1247 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real Guitar Highway</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@800;900&family=IBM+Plex+Mono:wght@400;500&display=swap"
+    />
+    <style>
+      :root {
+        --bg-dark: #060911;
+        --panel-bg: rgba(12, 18, 32, 0.84);
+        --panel-border: rgba(56, 189, 248, 0.22);
+        --accent: #38bdf8;
+        --green: #22c55e;
+        --text-main: #f8fafc;
+        --text-muted: #94a3b8;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg-dark);
+        color: var(--text-main);
+        font-family:
+          'Inter',
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        user-select: none;
+      }
+
+      #highway-viewport {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Top Gameplay HUD Bar */
+      .hud-top {
+        position: absolute;
+        top: 14px;
+        left: 18px;
+        right: 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 14px;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      .hud-left-group {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        pointer-events: auto;
+      }
+
+      .pause-trigger-btn {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1.5px solid rgba(248, 250, 252, 0.35);
+        color: #ffffff;
+        font-size: 1.05rem;
+        font-weight: 900;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+        transition: all 0.15s ease;
+        flex-shrink: 0;
+      }
+
+      .pause-trigger-btn:hover {
+        border-color: var(--accent);
+        background: rgba(56, 189, 248, 0.2);
+        transform: scale(1.05);
+      }
+
+      .hud-card {
+        background: var(--panel-bg);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--panel-border);
+        border-radius: 14px;
+        padding: 11px 15px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+        pointer-events: auto;
+      }
+
+      #song-title {
+        font-size: 1.12rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #ffffff;
+      }
+
+      #song-artist {
+        font-size: 0.76rem;
+        color: var(--text-muted);
+        margin-top: 2px;
+      }
+
+      .string-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
+        margin-top: 7px;
+      }
+
+      .legend-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.7rem;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid var(--rail-color, #38bdf8);
+        color: #e2e8f0;
+      }
+
+      .legend-chip .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--rail-color, #38bdf8);
+        box-shadow: 0 0 8px var(--rail-color, #38bdf8);
+      }
+
+      /* Telemetry Card */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, auto);
+        gap: 5px 14px;
+        font-size: 0.78rem;
+      }
+
+      .stat-label {
+        color: var(--text-muted);
+        font-weight: 500;
+      }
+
+      .stat-val {
+        font-weight: 700;
+        color: #f8fafc;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #hud-hand-pos {
+        color: #4ade80;
+        font-weight: 800;
+      }
+
+      .riff-preview {
+        margin-top: 7px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        font-size: 0.76rem;
+      }
+
+      #hud-upcoming-riff {
+        color: #00d2ff;
+        font-weight: 800;
+        font-family: 'IBM Plex Mono', monospace;
+      }
+
+      #clock-debug-hud {
+        margin-top: 7px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.7rem;
+        line-height: 1.4;
+        color: #cbd5e1;
+      }
+
+      /* Retro Arcade Scoring & Hit Feedback HUD */
+      #miss-vignette {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 8;
+        background: radial-gradient(
+          circle at center,
+          transparent 55%,
+          rgba(239, 68, 68, 0.42) 100%
+        );
+        opacity: 0;
+        transition: opacity 0.22s ease-out;
+      }
+
+      #miss-vignette.flash {
+        opacity: 1;
+        transition: opacity 0.03s linear;
+      }
+
+      .arcade-score-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      .arcade-score-block {
+        display: flex;
+        flex-direction: column;
+      }
+
+      .arcade-label {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.64rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--text-muted);
+      }
+
+      #arcade-score {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 2.15rem;
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        line-height: 1;
+        color: #f8fafc;
+        text-shadow: 0 0 14px rgba(56, 189, 248, 0.45);
+        font-variant-numeric: tabular-nums;
+      }
+
+      #arcade-multiplier {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 1.45rem;
+        font-weight: 900;
+        padding: 3px 10px;
+        border-radius: 9px;
+        background: rgba(30, 41, 59, 0.95);
+        border: 1.5px solid rgba(148, 163, 184, 0.4);
+        color: #cbd5e1;
+        letter-spacing: 0.04em;
+        transition: all 0.15s ease;
+      }
+
+      #arcade-multiplier[data-mult='2'] {
+        border-color: #38bdf8;
+        color: #38bdf8;
+        box-shadow: 0 0 14px rgba(56, 189, 248, 0.45);
+      }
+
+      #arcade-multiplier[data-mult='3'] {
+        border-color: #a855f7;
+        color: #d8b4fe;
+        box-shadow: 0 0 18px rgba(168, 85, 247, 0.55);
+      }
+
+      #arcade-multiplier[data-mult='4'] {
+        border-color: #facc15;
+        color: #fef08a;
+        background: rgba(234, 179, 8, 0.18);
+        box-shadow: 0 0 22px rgba(250, 204, 21, 0.75);
+        animation: multPulse 0.75s infinite alternate ease-in-out;
+      }
+
+      @keyframes multPulse {
+        from {
+          transform: scale(1);
+          box-shadow: 0 0 16px rgba(250, 204, 21, 0.55);
+        }
+        to {
+          transform: scale(1.08);
+          box-shadow: 0 0 28px rgba(250, 204, 21, 0.95);
+        }
+      }
+
+      .hud-center-arcade {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        min-width: 210px;
+        pointer-events: none;
+        text-align: center;
+      }
+
+      #arcade-rating {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 2.5rem;
+        font-weight: 900;
+        letter-spacing: 0.06em;
+        line-height: 1;
+        text-transform: uppercase;
+        min-height: 2.5rem;
+        opacity: 0;
+        transform: scale(0.75);
+        transition:
+          opacity 0.18s ease,
+          transform 0.14s cubic-bezier(0.22, 1.4, 0.36, 1);
+      }
+
+      #arcade-rating.pop {
+        opacity: 1;
+        transform: scale(1.08);
+      }
+
+      #arcade-rating[data-rating='PERFECT'] {
+        color: #4ade80;
+        text-shadow: 0 0 20px rgba(34, 197, 94, 0.85);
+      }
+
+      #arcade-rating[data-rating='GREAT'] {
+        color: #38bdf8;
+        text-shadow: 0 0 18px rgba(14, 165, 233, 0.8);
+      }
+
+      #arcade-rating[data-rating='GOOD'] {
+        color: #facc15;
+        text-shadow: 0 0 16px rgba(234, 179, 8, 0.75);
+      }
+
+      #arcade-rating[data-rating='MISS'] {
+        color: #f87171;
+        text-shadow: 0 0 18px rgba(239, 68, 68, 0.85);
+      }
+
+      .arcade-streak-pill {
+        margin-top: 4px;
+        background: rgba(12, 18, 32, 0.86);
+        border: 1px solid rgba(56, 189, 248, 0.28);
+        border-radius: 999px;
+        padding: 4px 14px;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        letter-spacing: 0.06em;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+      }
+
+      .arcade-hotkey-hint {
+        margin-top: 4px;
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.65rem;
+        color: #94a3b8;
+        background: rgba(6, 9, 17, 0.65);
+        padding: 2px 8px;
+        border-radius: 6px;
+      }
+
+      .arcade-accuracy-header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 6px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+      }
+
+      #arcade-accuracy {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 1.95rem;
+        font-weight: 900;
+        line-height: 1;
+        color: #4ade80;
+        letter-spacing: 0.03em;
+        text-shadow: 0 0 12px rgba(74, 222, 128, 0.35);
+      }
+
+      .note-pill {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 6px;
+        border: 1px solid;
+        font-size: 0.72rem;
+        background: rgba(15, 23, 42, 0.9);
+        margin-right: 4px;
+      }
+
+      .muted {
+        color: var(--text-muted);
+        font-style: italic;
+      }
+
+      button {
+        background: rgba(30, 41, 59, 0.92);
+        color: var(--text-main);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 9px;
+        padding: 8px 14px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        background: rgba(56, 189, 248, 0.16);
+      }
+
+      button.primary-btn {
+        background: linear-gradient(135deg, #0284c7, #2563eb);
+        border-color: #38bdf8;
+        box-shadow: 0 0 16px rgba(56, 189, 248, 0.35);
+      }
+
+      button.active-guitar {
+        background: rgba(34, 197, 94, 0.22);
+        border-color: #22c55e;
+        color: #86efac;
+      }
+
+      /* Modal Overlays (Pre-Song Guitar Input Check & Pause Menu) */
+      .modal-backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: 18;
+        background: rgba(6, 9, 17, 0.84);
+        backdrop-filter: blur(12px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .modal-backdrop[hidden] {
+        display: none;
+      }
+
+      .modal-card {
+        width: min(640px, 100%);
+        background: rgba(15, 23, 42, 0.96);
+        border: 1px solid rgba(56, 189, 248, 0.32);
+        border-radius: 18px;
+        padding: 28px 30px;
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.65);
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
+      }
+
+      .modal-kicker {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--accent);
+      }
+
+      .modal-title {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 2.4rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.01em;
+        line-height: 1;
+        margin-top: 4px;
+      }
+
+      .modal-subtitle {
+        font-size: 0.85rem;
+        color: var(--text-muted);
+        margin-top: 4px;
+      }
+
+      .setup-section {
+        background: rgba(9, 14, 26, 0.75);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 12px;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .setup-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      select#audio-input-select {
+        background: rgba(15, 23, 42, 0.95);
+        color: var(--text-main);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 0.84rem;
+        width: 100%;
+      }
+
+      .level-meter {
+        width: 100%;
+        height: 12px;
+        background: rgba(30, 41, 59, 0.9);
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+      }
+
+      #guitar-level-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #22c55e, #38bdf8);
+        transition: width 0.05s linear;
+      }
+
+      #guitar-pitch-badge {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #4ade80;
+      }
+
+      .tuner-strings-row {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 6px;
+      }
+
+      .tuner-string-pill {
+        text-align: center;
+        padding: 6px 4px;
+        border-radius: 8px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        background: rgba(15, 23, 42, 0.9);
+        border: 1px solid var(--rail-color, #475569);
+        color: #cbd5e1;
+      }
+
+      .modal-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 6px;
+      }
+
+      #start-song-btn,
+      #resume-btn {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: 1.45rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 10px 32px;
+        background: #22c55e;
+        border-color: #4ade80;
+        color: #052e16;
+      }
+
+      #start-song-btn:hover,
+      #resume-btn:hover {
+        background: #4ade80;
+      }
+
+      /* Pause Menu Controls */
+      .scrub-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .time-badge {
+        font-family: 'IBM Plex Mono', monospace;
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        min-width: 56px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #scrub-slider {
+        flex: 1;
+        accent-color: var(--accent);
+        height: 6px;
+        cursor: pointer;
+      }
+
+      .btn-group {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .speed-control {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.8rem;
+        color: var(--text-muted);
+      }
+
+      input[type='range'].compact-slider {
+        width: 110px;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+
+      /* Hide gameplay HUD when Main Menu or Guitar Setup Screen is open */
+      body.menu-open .hud-top,
+      body.setup-open .hud-top {
+        display: none;
+      }
+
+      /* Main Menu Overlay */
+      #main-menu {
+        --m-bg: #0e0d0c;
+        --m-ink: #efe8da;
+        --m-dim: #8a8478;
+        --m-line: #2a2724;
+        --m-row: #171513;
+        --m-accent: #ff5a1f;
+        --m-display: 'Big Shoulders Display', Impact, 'Arial Narrow', sans-serif;
+        --m-mono: 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+        position: absolute;
+        inset: 0;
+        z-index: 20;
+        overflow-y: auto;
+        padding: clamp(24px, 6vh, 64px) 16px;
+        background: rgba(14, 13, 12, 0.95);
+        color: var(--m-ink);
+        font-family: var(--m-mono);
+        user-select: text;
+      }
+
+      #main-menu[hidden] {
+        display: none;
+      }
+
+      #main-menu button {
+        all: unset;
+        box-sizing: border-box;
+        cursor: pointer;
+      }
+
+      #main-menu button:focus-visible,
+      #main-menu input:focus-visible {
+        outline: 2px solid var(--m-accent);
+        outline-offset: 2px;
+      }
+
+      .menu-panel {
+        width: min(760px, 100%);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 40px;
+      }
+
+      .menu-kicker {
+        font-size: 0.72rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--m-accent);
+      }
+
+      .menu-brand h1 {
+        font-family: var(--m-display);
+        font-size: clamp(3.4rem, 12vw, 6.5rem);
+        font-weight: 900;
+        line-height: 0.86;
+        text-transform: uppercase;
+        letter-spacing: -0.01em;
+        margin-top: 10px;
+      }
+
+      .menu-strings {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+        margin-top: 22px;
+      }
+
+      .menu-strings span {
+        display: block;
+        height: var(--w);
+        background: var(--c);
+        opacity: 0.85;
+      }
+
+      .menu-section-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        padding-bottom: 10px;
+        border-bottom: 2px solid var(--m-ink);
+      }
+
+      .menu-section-head h2 {
+        font-family: var(--m-display);
+        font-size: 1.6rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+      }
+
+      .menu-section-head span {
+        font-size: 0.74rem;
+        color: var(--m-dim);
+      }
+
+      #menu-song-list {
+        display: flex;
+        flex-direction: column;
+        max-height: 42vh;
+        overflow-y: auto;
+      }
+
+      #menu-song-list .muted {
+        padding: 16px 0;
+        color: var(--m-dim);
+      }
+
+      #main-menu button.song-row {
+        display: grid;
+        grid-template-columns: 3ch 1fr auto;
+        align-items: center;
+        gap: 4px 18px;
+        width: 100%;
+        padding: 14px 14px 14px 10px;
+        border-bottom: 1px solid var(--m-line);
+        border-left: 4px solid transparent;
+        transition: background 0.12s ease;
+      }
+
+      #main-menu button.song-row:hover {
+        background: var(--m-row);
+      }
+
+      #main-menu button.song-row.selected {
+        background: var(--m-row);
+        border-left-color: var(--m-accent);
+      }
+
+      .song-row-num {
+        font-size: 0.8rem;
+        color: var(--m-dim);
+      }
+
+      .song-row.selected .song-row-num {
+        color: var(--m-accent);
+      }
+
+      .song-row-title {
+        font-family: var(--m-display);
+        font-size: 1.55rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        line-height: 1;
+      }
+
+      .song-row-artist {
+        font-size: 0.78rem;
+        color: var(--m-dim);
+        margin-top: 4px;
+      }
+
+      .song-row-meta {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        font-size: 0.76rem;
+        color: var(--m-dim);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .difficulty {
+        display: inline-flex;
+        align-items: flex-end;
+        gap: 2px;
+      }
+
+      .difficulty .bar {
+        width: 4px;
+        background: var(--m-line);
+      }
+
+      .difficulty .bar.on {
+        background: var(--m-ink);
+      }
+
+      .menu-actions {
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        margin-top: 20px;
+      }
+
+      #main-menu button#menu-play-btn {
+        font-family: var(--m-display);
+        font-size: 1.5rem;
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 12px 38px;
+        background: var(--m-accent);
+        color: var(--m-bg);
+        transition: transform 0.1s ease;
+      }
+
+      #main-menu button#menu-play-btn:hover {
+        transform: translateY(-2px);
+      }
+
+      #main-menu button#menu-play-btn:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      #menu-status,
+      #menu-search-status {
+        font-size: 0.78rem;
+        color: var(--m-dim);
+      }
+
+      #menu-audio-status {
+        margin-top: 12px;
+        font-size: 0.76rem;
+        color: var(--m-dim);
+      }
+
+      .audio-pending {
+        color: var(--m-ink);
+      }
+
+      #main-menu button.menu-link-btn {
+        color: var(--m-accent);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        margin-left: 6px;
+      }
+
+      .audio-tag {
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+
+      .audio-tag.pending {
+        color: var(--m-accent);
+      }
+
+      #menu-search-form {
+        display: flex;
+        gap: 14px;
+        margin-top: 16px;
+      }
+
+      #menu-search-input {
+        flex: 1;
+        min-width: 0;
+        background: transparent;
+        color: var(--m-ink);
+        border: none;
+        border-bottom: 1px solid var(--m-dim);
+        padding: 8px 0;
+        font-family: var(--m-mono);
+        font-size: 0.88rem;
+      }
+
+      #menu-search-input::placeholder {
+        color: var(--m-dim);
+      }
+
+      #menu-search-input:focus {
+        outline: none;
+        border-bottom-color: var(--m-accent);
+      }
+
+      #main-menu button.menu-search-btn {
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        padding: 8px 14px;
+        border: 1px solid var(--m-ink);
+      }
+
+      #main-menu button.menu-search-btn:hover {
+        background: var(--m-ink);
+        color: var(--m-bg);
+      }
+
+      #menu-search-status {
+        margin-top: 10px;
+      }
+
+      #menu-search-results {
+        display: flex;
+        flex-direction: column;
+        max-height: 34vh;
+        overflow-y: auto;
+        margin-top: 8px;
+      }
+
+      #main-menu button.search-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 10px 4px;
+        border-bottom: 1px solid var(--m-line);
+      }
+
+      #main-menu button.search-row:hover:not(:disabled) {
+        background: var(--m-row);
+      }
+
+      #main-menu button.search-row:disabled {
+        cursor: progress;
+      }
+
+      .search-row-name {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 2px 12px;
+        min-width: 0;
+      }
+
+      .search-row-title {
+        font-size: 0.9rem;
+        color: var(--m-ink);
+      }
+
+      .search-row-artist {
+        font-size: 0.76rem;
+        color: var(--m-dim);
+      }
+
+      .search-row-action {
+        flex-shrink: 0;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--m-accent);
+      }
+
+      .search-row.added .search-row-action {
+        color: var(--m-dim);
+      }
+
+      .menu-hint {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 18px;
+        font-size: 0.74rem;
+        color: var(--m-dim);
+      }
+
+      .menu-hint kbd {
+        font-family: var(--m-mono);
+        font-size: 0.7rem;
+        color: var(--m-ink);
+        border: 1px solid var(--m-line);
+        border-bottom-width: 2px;
+        padding: 1px 6px;
+        margin-right: 4px;
+      }
+
+      @media (max-width: 560px) {
+        #main-menu button.song-row {
+          grid-template-columns: 3ch 1fr;
+        }
+
+        .song-row-meta {
+          grid-column: 2;
+          gap: 12px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="highway-viewport"></div>
+    <div id="miss-vignette" aria-hidden="true"></div>
+
+    <!-- Top Gameplay HUD (Top-Left Score & Multiplier, Top-Center Hit Rating & Streak, Top-Right Accuracy & Telemetry) -->
+    <header class="hud-top">
+      <div class="hud-left-group">
+        <button
+          id="open-pause-btn"
+          class="pause-trigger-btn"
+          type="button"
+          title="Pause & Controls (Esc)"
+          aria-label="Open Pause Menu"
+        >
+          ❚❚
+        </button>
+        <div class="hud-card">
+          <div class="arcade-score-row">
+            <div class="arcade-score-block">
+              <span class="arcade-label">Score</span>
+              <span id="arcade-score">000,000</span>
+            </div>
+            <span id="arcade-multiplier" data-mult="1">1X</span>
+          </div>
+          <div id="song-title">Seven Nation Army</div>
+          <div id="song-artist">The White Stripes</div>
+          <div id="string-legend" class="string-legend"></div>
+        </div>
+      </div>
+
+      <div class="hud-center-arcade">
+        <div id="arcade-rating" data-rating="PERFECT">PERFECT</div>
+        <div id="arcade-streak" class="arcade-streak-pill">STREAK: 0</div>
+        <div class="arcade-hotkey-hint">Keys 1–6: Test Hit Strings 1–6</div>
+      </div>
+
+      <div class="hud-card">
+        <div class="arcade-accuracy-header">
+          <span class="arcade-label">Accuracy</span>
+          <span id="arcade-accuracy">100.0%</span>
+        </div>
+        <div class="stats-grid">
+          <span class="stat-label">Measure:</span>
+          <span id="hud-measure" class="stat-val">1 / 117</span>
+          <span class="stat-label">Tempo:</span>
+          <span id="hud-bpm" class="stat-val">125 BPM</span>
+          <span class="stat-label">Hand Bracket:</span>
+          <span id="hud-hand-pos" class="stat-val">Frets 7–10</span>
+          <span class="stat-label">Fretboard Hit:</span>
+          <span id="hud-active-notes" class="stat-val"><span class="muted">Ready</span></span>
+        </div>
+        <div class="riff-preview">
+          <span class="stat-label">Upcoming Frets: </span>
+          <span id="hud-upcoming-riff">7 - 7 - 10 - 7 - 5 - 3 - 2</span>
+        </div>
+        <div id="clock-debug-hud"></div>
+      </div>
+    </header>
+
+    <!-- Pre-Song USB Guitar Audio Interface Check Screen (Appears after hitting Play in Setlist) -->
+    <div
+      id="guitar-setup-screen"
+      class="modal-backdrop"
+      role="dialog"
+      aria-labelledby="setup-heading"
+      hidden
+    >
+      <div class="modal-card">
+        <div>
+          <div class="modal-kicker">Step 2 · Soundcheck &amp; Direct Monitoring</div>
+          <h2 id="setup-heading" class="modal-title">Test Your Guitar Input</h2>
+          <p id="setup-song-subtitle" class="modal-subtitle">
+            Plug in your USB guitar interface to test your signal before the song starts, or jump right in.
+          </p>
+        </div>
+
+        <div class="setup-section">
+          <div class="setup-row">
+            <strong style="font-size: 0.85rem; color: #e2e8f0">USB Guitar Audio Interface</strong>
+            <span id="guitar-pitch-badge">Off</span>
+          </div>
+          <select id="audio-input-select" aria-label="Select USB Guitar Audio Interface">
+            <option value="default">Default USB / Guitar Audio Input</option>
+          </select>
+          <div class="setup-row">
+            <div class="btn-group">
+              <button id="guitar-connect-btn" type="button">🎸 Enable Guitar Passthrough</button>
+              <button
+                id="direct-monitor-btn"
+                type="button"
+                class="active-guitar"
+                title="Zero-latency direct speaker/headphone monitoring"
+              >
+                🔊 Direct Monitor: ON
+              </button>
+            </div>
+            <div class="speed-control">
+              <label for="guitar-volume-slider">Gain:</label>
+              <input
+                id="guitar-volume-slider"
+                class="compact-slider"
+                type="range"
+                min="0"
+                max="2.0"
+                step="0.05"
+                value="0.85"
+              />
+            </div>
+          </div>
+          <div class="level-meter" title="Live Guitar Input Level">
+            <div id="guitar-level-fill"></div>
+          </div>
+          <div id="tuner-strings-row" class="tuner-strings-row"></div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="setup-back-btn" type="button">← Back to Setlist</button>
+          <button id="start-song-btn" type="button">▶ Start Song</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause Menu Overlay (Contains Scrubbing, Playback, Sync & Highway Speed Controls) -->
+    <div
+      id="pause-menu"
+      class="modal-backdrop"
+      role="dialog"
+      aria-labelledby="pause-heading"
+      hidden
+    >
+      <div class="modal-card">
+        <div>
+          <div class="modal-kicker">Game Paused</div>
+          <h2 id="pause-heading" class="modal-title">Pause Menu</h2>
+          <p id="pause-song-subtitle" class="modal-subtitle">Seven Nation Army · The White Stripes</p>
+        </div>
+
+        <div class="setup-section">
+          <div class="scrub-row">
+            <span id="time-current" class="time-badge">0:00.0</span>
+            <input
+              id="scrub-slider"
+              type="range"
+              min="0"
+              max="228500"
+              step="10"
+              value="0"
+              aria-label="Timeline Scrubbing Slider"
+            />
+            <span id="time-total" class="time-badge">3:48.5</span>
+          </div>
+
+          <div class="setup-row">
+            <div class="btn-group">
+              <button id="play-pause-btn" type="button" class="primary-btn">▶ Play</button>
+              <button id="restart-btn" type="button">⏮ Restart</button>
+              <span id="section-jump-group" class="btn-group"></span>
+              <button id="backing-mute-btn" type="button">🔊 Backing: ON</button>
+            </div>
+          </div>
+
+          <div class="setup-row">
+            <div
+              class="speed-control"
+              title="If the music is ahead of or behind the notes, nudge it here ([ and ] keys)"
+            >
+              <span>Audio Sync:</span>
+              <button id="sync-earlier-btn" type="button" aria-label="Play audio earlier">−</button>
+              <span id="sync-value" class="time-badge">0 ms</span>
+              <button id="sync-later-btn" type="button" aria-label="Play audio later">+</button>
+            </div>
+
+            <div class="speed-control">
+              <label for="speed-slider">Highway Speed:</label>
+              <input
+                id="speed-slider"
+                class="compact-slider"
+                type="range"
+                min="0.008"
+                max="0.03"
+                step="0.001"
+                value="0.012"
+              />
+              <span id="speed-value">12 u/s</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <div class="btn-group">
+            <button id="menu-btn" type="button">☰ Change Song</button>
+            <button id="pause-guitar-setup-btn" type="button">🎸 Guitar Input Setup</button>
+          </div>
+          <button id="resume-btn" type="button">▶ Resume</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Start Menu -->
+    <div id="main-menu" role="dialog" aria-labelledby="menu-heading">
+      <div class="menu-panel">
+        <header class="menu-brand">
+          <span class="menu-kicker">Plug in · Tune up · Play along</span>
+          <h1 id="menu-heading">Real Guitar<br />Highway</h1>
+          <div id="menu-strings" class="menu-strings" aria-hidden="true"></div>
+        </header>
+
+        <section>
+          <div class="menu-section-head">
+            <h2>Setlist</h2>
+            <span id="menu-song-count"></span>
+          </div>
+          <div id="menu-song-list"><p class="muted">Loading songs…</p></div>
+          <div class="menu-actions">
+            <button id="menu-play-btn" type="button" disabled>Play</button>
+            <div id="menu-status" role="status"></div>
+          </div>
+          <div id="menu-audio-status" role="status"></div>
+        </section>
+
+        <section>
+          <div class="menu-section-head">
+            <h2>Find a Song</h2>
+            <span>Tabs from GProTab.net</span>
+          </div>
+          <form id="menu-search-form" role="search">
+            <input
+              id="menu-search-input"
+              type="search"
+              placeholder="Song, artist, or both: “seven nation army white stripes”"
+              aria-label="Search for a song or artist"
+              autocomplete="off"
+            />
+            <button class="menu-search-btn" type="submit">Search</button>
+          </form>
+          <div id="menu-search-status" role="status"></div>
+          <div id="menu-search-results"></div>
+        </section>
+
+        <footer class="menu-hint">
+          <span><kbd>Space</kbd>play / pause</span>
+          <span><kbd>←</kbd><kbd>→</kbd>seek 2s</span>
+          <span><kbd>Esc</kbd>pause menu</span>
+        </footer>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

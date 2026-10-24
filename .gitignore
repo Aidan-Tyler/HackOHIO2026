@@ -6,6 +6,19 @@ __pycache__/
 # C extensions
 *.so
 
+# Data & Large Media
+backend/data/raw_gp5/*.gp5
+backend/data/raw_gp5/gprotab-*
+backend/data/audio/*
+backend/data/charts/*.json
+!backend/data/raw_gp5/.gitkeep
+!backend/data/audio/.gitkeep
+!backend/data/charts/.gitkeep
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
 # Distribution / packaging
 .Python
 build/

@@ -1,0 +1,21 @@
+{
+  "songs": [
+    {
+      "id": "white-stripes-seven_nation_army",
+      "title": "Seven Nation Army",
+      "artist": "The White Stripes",
+      "chartUrl": "/charts/white-stripes-seven_nation_army.json",
+      "audioUrl": "/audio/white-stripes-seven_nation_army_backing.mp3",
+      "durationMs": 228212,
+      "bpm": 125,
+      "tuning": "Open A",
+      "difficulty": 1,
+      "offsetMs": 3108,
+      "sections": [
+        { "label": "Riff", "timeMs": 0 },
+        { "label": "Chorus 1", "timeMs": 50184 },
+        { "label": "Guitar Solo", "timeMs": 120939 }
+      ]
+    }
+  ]
+}

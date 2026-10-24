@@ -1,0 +1,10 @@
+requests>=2.31.0
+pyguitarpro>=0.8
+yt-dlp>=2024.0.0
+imageio-ffmpeg>=0.5.1
+librosa>=0.10.1
+numpy>=1.24.0
+scipy>=1.11.0
+fastapi>=0.110.0
+uvicorn>=0.28.0
+pytest>=8.0.0

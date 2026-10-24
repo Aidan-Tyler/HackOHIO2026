@@ -1,0 +1,11 @@
+{
+  "name": "hackohio2026-root",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix frontend run dev",
+    "backend": "backend/.venv/bin/uvicorn backend.main:app --reload --port 8000",
+    "dev:all": "npm run backend & npm run dev",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview"
+  }
+}
