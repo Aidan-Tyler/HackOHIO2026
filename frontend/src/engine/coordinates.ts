@@ -1,55 +1,61 @@
 /**
- * Pure coordinate projection math for the 3D Yousician/Rocksmith-style Fretboard & Highway.
- * Kept strictly decoupled from Three.js rendering logic per AGENTS.md guardrails.
+ * Coordinate projection math for the 3D Yousician-style Fretboard & Highway.
+ * Decoupled from Three.js rendering per AGENTS.md guardrails.
  */
 
 import type { ChartNote } from '../types/chart';
 
 export interface HighwayConfig {
-  /** Total number of frets on the pinned fretboard (0 through 24) */
+  /** Total number of frets on the pinned target fretboard (0 through 15) */
   maxFret: number;
+  /** World X position of Fret 0 (the nut) */
+  nutX: number;
   /** Horizontal spacing between adjacent fret wires in world X units */
   fretSpacingX: number;
-  /** Vertical spacing between adjacent horizontal strings (6 down to 1) at Z=0 */
+  /** Vertical spacing between adjacent horizontal strings (1 down to 6) at Z=0 */
   stringSpacingY: number;
-  /** Highway elevation angle in degrees (default ~30°) */
-  highwayElevationDeg: number;
-  /** World distance units per millisecond along the highway ramp */
+  /** World Y position of the lowest rail (String 6 / Low E) */
+  baseStringY: number;
+  /** Highway scroll speed in world units per second */
+  speed: number;
+  /** Backward-compatible speed multiplier (speed / 1000) */
   speedMultiplier: number;
   /** Z-coordinate of the pinned fretboard target bar */
   hitBarZ: number;
-  /** Maximum highway distance visible into the scene */
+  /** Far clipping distance along -Z for the note highway */
   highwayLengthDist: number;
-  /** Minimum highway distance past the fretboard before notes despawn */
+  /** Distance past Z=0 (+Z) before notes despawn */
   despawnDist: number;
   /** Hit window tolerance in milliseconds around Z=0 */
   hitWindowMs: number;
 }
 
 export const DEFAULT_HIGHWAY_CONFIG: HighwayConfig = {
-  maxFret: 24,
-  fretSpacingX: 0.62,
-  stringSpacingY: 0.36,
-  highwayElevationDeg: 30,
-  speedMultiplier: 0.015,
+  maxFret: 15,
+  nutX: 0.25,
+  fretSpacingX: 0.65,
+  stringSpacingY: 0.21,
+  baseStringY: 0.42,
+  speed: 12.0,
+  speedMultiplier: 0.012,
   hitBarZ: 0,
-  highwayLengthDist: 46,
-  despawnDist: -2.5,
-  hitWindowMs: 80,
+  highwayLengthDist: 48,
+  despawnDist: 2.2,
+  hitWindowMs: 85,
 };
 
 export interface StringRailSpec {
   /** Guitar string number: 6 (Low E) down to 1 (High E) */
   stringNumber: number;
-  /** 0-indexed lane in chart JSON: stringNumber - 1 (A-string = lane 4) */
+  /** 0-indexed lane in chart JSON: stringNumber - 1 */
   chartLane: number;
-  /** Top-to-bottom row index on the pinned fretboard: 0 (String 6/Low E) to 5 (String 1/High E) */
+  /** Top-to-bottom row index on the pinned fretboard: 0 (String 6 / Low E) to 5 (String 1 / High E) */
   rowIndex: number;
   /** Display label for the string */
   label: string;
   /** Short note name of the string */
   noteName: string;
-  /** Hex color for the string and note capsules (Yousician/Rocksmith palette) */
+  /** Hex color for the string and note capsules (Yousician palette) */
   colorHex: number;
   /** CSS hex string for UI badges and Canvas2D fret labels */
   colorCss: string;
@@ -58,7 +64,8 @@ export interface StringRailSpec {
 }
 
 /**
- * Six horizontal guitar strings ordered from top (String 6 / Low E) down to bottom (String 1 / High E).
+ * Six horizontal guitar strings ordered from top (String 6 / Low E, Red)
+ * down to bottom (String 1 / High E, Purple).
  */
 export const STRING_RAILS: readonly StringRailSpec[] = [
   {
@@ -67,8 +74,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 0,
     label: '6 · Low E',
     noteName: 'E2',
-    colorHex: 0xff3b5c,
-    colorCss: '#ff3b5c',
+    colorHex: 0xf44336,
+    colorCss: '#f44336',
     radius: 0.036,
   },
   {
@@ -77,8 +84,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 1,
     label: '5 · A',
     noteName: 'A2',
-    colorHex: 0x00d2ff,
-    colorCss: '#00d2ff',
+    colorHex: 0x4caf50,
+    colorCss: '#4caf50',
     radius: 0.032,
   },
   {
@@ -87,8 +94,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 2,
     label: '4 · D',
     noteName: 'D3',
-    colorHex: 0xffbe0b,
-    colorCss: '#ffbe0b',
+    colorHex: 0xff9800,
+    colorCss: '#ff9800',
     radius: 0.028,
   },
   {
@@ -97,8 +104,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 3,
     label: '3 · G',
     noteName: 'G3',
-    colorHex: 0x22c55e,
-    colorCss: '#22c55e',
+    colorHex: 0xffeb3b,
+    colorCss: '#ffeb3b',
     radius: 0.024,
   },
   {
@@ -107,8 +114,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 4,
     label: '2 · B',
     noteName: 'B3',
-    colorHex: 0xa855f7,
-    colorCss: '#a855f7',
+    colorHex: 0x2196f3,
+    colorCss: '#2196f3',
     radius: 0.02,
   },
   {
@@ -117,8 +124,8 @@ export const STRING_RAILS: readonly StringRailSpec[] = [
     rowIndex: 5,
     label: '1 · High E',
     noteName: 'E4',
-    colorHex: 0xf97316,
-    colorCss: '#f97316',
+    colorHex: 0x9c27b0,
+    colorCss: '#9c27b0',
     radius: 0.017,
   },
 ] as const;
@@ -135,93 +142,76 @@ export interface ChordCluster {
 }
 
 /**
- * Projects a timestamp (in ms) onto highway distance:
- * Z = (noteTimeMs - currentTimeMs) * speedMultiplier
+ * Normalizes speed input so both `speed` (e.g. 12 units/sec) and `speedMultiplier` (e.g. 0.012 units/ms) work seamlessly.
+ */
+export function normalizeSpeedUnitsPerSec(speedOrMultiplier: number): number {
+  const abs = Math.abs(speedOrMultiplier);
+  return abs < 0.5 ? abs * 1000 : abs;
+}
+
+/**
+ * Projects a note timestamp (in ms) onto world Z along the -Z highway:
+ * Z = (note.timeMs - currentAudioTimeMs) * (speed / 1000) directed into -Z.
  */
 export function projectTimeToZ(
   noteTimeMs: number,
-  currentTimeMs: number,
-  speedMultiplier: number = DEFAULT_HIGHWAY_CONFIG.speedMultiplier,
+  currentAudioTimeMs: number,
+  speed: number = DEFAULT_HIGHWAY_CONFIG.speed,
 ): number {
-  return (noteTimeMs - currentTimeMs) * speedMultiplier;
+  const effectiveSpeed = normalizeSpeedUnitsPerSec(speed);
+  return -((noteTimeMs - currentAudioTimeMs) * (effectiveSpeed / 1000));
 }
 
 /**
- * Converts a highway distance `dist` into 3D world `(yOffset, z)` coordinates
- * along the ~30° elevated perspective highway ramp.
- */
-export function highwayDistToWorldYZ(
-  dist: number,
-  elevationDeg: number = DEFAULT_HIGHWAY_CONFIG.highwayElevationDeg,
-): { yOffset: number; z: number } {
-  const rad = (elevationDeg * Math.PI) / 180;
-  return {
-    yOffset: dist * Math.sin(rad),
-    z: -dist * Math.cos(rad),
-  };
-}
-
-/**
- * Converts a duration in milliseconds to world length along the highway ramp.
+ * Converts a duration in milliseconds to world Z length along the highway.
  */
 export function durationToWorldZ(
   durationMs: number,
-  speedMultiplier: number = DEFAULT_HIGHWAY_CONFIG.speedMultiplier,
+  speed: number = DEFAULT_HIGHWAY_CONFIG.speed,
 ): number {
-  return Math.max(0, durationMs * speedMultiplier);
+  const effectiveSpeed = normalizeSpeedUnitsPerSec(speed);
+  return Math.max(0, durationMs * (effectiveSpeed / 1000));
 }
 
 /**
- * Maps a fret number (0..24) to its horizontal world X coordinate on the fretboard.
- * Fret 0 is at the nut on the left; frets 1..24 are centered between fret wires `f-1` and `f`.
+ * Maps a fret wire index (0 = nut, 1..15 = metallic fret wires) to its exact world X position.
+ */
+export function fretWireToWorldX(
+  wireIndex: number,
+  config: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
+): number {
+  const clamped = Math.max(0, Math.min(config.maxFret, wireIndex));
+  return config.nutX + clamped * config.fretSpacingX;
+}
+
+/**
+ * Maps a fret number (0..15) to its horizontal world X coordinate on the fretboard.
+ * - Fret 0: open string indicator at the nut.
+ * - Frets 1..15: centered between fret wire (f - 1) and fret wire f.
  */
 export function fretToWorldX(
   fretNumber: number,
   config: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
 ): number {
   const clamped = Math.max(0, Math.min(config.maxFret, fretNumber));
-  const totalWidth = config.maxFret * config.fretSpacingX;
-  const nutX = -totalWidth / 2;
   if (clamped === 0) {
-    return nutX - config.fretSpacingX * 0.45;
+    return config.nutX - config.fretSpacingX * 0.32;
   }
-  return nutX + (clamped - 0.5) * config.fretSpacingX;
+  const leftWireX = fretWireToWorldX(clamped - 1, config);
+  const rightWireX = fretWireToWorldX(clamped, config);
+  return (leftWireX + rightWireX) / 2;
 }
 
 /**
- * Maps a fret wire index (0 = nut, 1..24 = fret wires) to its exact world X position.
- */
-export function fretWireToWorldX(
-  wireIndex: number,
-  config: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
-): number {
-  const totalWidth = config.maxFret * config.fretSpacingX;
-  const nutX = -totalWidth / 2;
-  return nutX + wireIndex * config.fretSpacingX;
-}
-
-/**
- * Maps a guitar string number (6 = Low E at top .. 1 = High E at bottom)
+ * Maps a guitar string number (6 = Low E Red at top .. 1 = High E Purple at bottom)
  * to its vertical world Y coordinate on the pinned fretboard target bar at Z=0.
  */
 export function stringToWorldY(
   stringNumber: number,
-  stringSpacingY: number = DEFAULT_HIGHWAY_CONFIG.stringSpacingY,
+  config: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
 ): number {
   const clamped = Math.max(1, Math.min(6, Math.round(stringNumber)));
-  // rowIndex 0 (String 6) -> +2.5 * spacing; rowIndex 5 (String 1) -> -2.5 * spacing
-  const rowIndex = 6 - clamped;
-  return (2.5 - rowIndex) * stringSpacingY;
-}
-
-/**
- * Backward-compatible alias mapping string number to primary lane offset.
- */
-export function stringToWorldX(
-  stringNumber: number,
-  laneSpacing: number = DEFAULT_HIGHWAY_CONFIG.stringSpacingY,
-): number {
-  return stringToWorldY(stringNumber, laneSpacing);
+  return config.baseStringY + (clamped - 1) * config.stringSpacingY;
 }
 
 /**
@@ -233,22 +223,23 @@ export function getStringRailSpec(stringNumber: number): StringRailSpec {
 }
 
 /**
- * Checks whether a highway distance is within the visible frustum window.
+ * Checks whether a world Z position is within the visible highway frustum window
+ * (from -highwayLengthDist up to +despawnDist).
  */
 export function isZVisible(
-  dist: number,
+  worldZ: number,
   config: HighwayConfig = DEFAULT_HIGHWAY_CONFIG,
 ): boolean {
-  return dist >= config.despawnDist && dist <= config.highwayLengthDist;
+  return worldZ >= -config.highwayLengthDist && worldZ <= config.despawnDist;
 }
 
 /**
- * Checks whether a note at `noteTimeMs` (with `durationMs`) is currently crossing the fretboard hit bar.
+ * Checks whether a note at `noteTimeMs` (with `durationMs`) is currently crossing the fretboard hit bar at Z=0.
  */
 export function isNoteActiveAtHitBar(
   noteTimeMs: number,
   durationMs: number,
-  currentTimeMs: number,
+  currentAudioTimeMs: number,
   hitWindowMs: number = DEFAULT_HIGHWAY_CONFIG.hitWindowMs,
 ): boolean {
   const startWindow = noteTimeMs - hitWindowMs;
@@ -256,32 +247,31 @@ export function isNoteActiveAtHitBar(
     noteTimeMs + hitWindowMs,
     noteTimeMs + durationMs * 0.75,
   );
-  return currentTimeMs >= startWindow && currentTimeMs <= endWindow;
+  return currentAudioTimeMs >= startWindow && currentAudioTimeMs <= endWindow;
 }
 
 /**
  * Computes the active 4-fret hand position window (`startFret` .. `startFret + 3`)
- * based on upcoming fretted notes (`fret > 0`) near `currentTimeMs`.
+ * within frets 1..15 based on upcoming fretted notes (`fret > 0`) near `currentAudioTimeMs`.
  */
 export function computeActiveHandPosition(
   notes: readonly ChartNote[],
-  currentTimeMs: number,
+  currentAudioTimeMs: number,
   maxFret: number = DEFAULT_HIGHWAY_CONFIG.maxFret,
 ): { startFret: number; endFret: number } {
-  // Look at notes currently active or arriving within the next 3.5 seconds
   const upcomingFretted = notes.filter(
     (n) =>
       n.fret > 0 &&
-      n.timeMs + n.durationMs >= currentTimeMs - 100 &&
-      n.timeMs <= currentTimeMs + 3500,
+      n.timeMs + n.durationMs >= currentAudioTimeMs - 100 &&
+      n.timeMs <= currentAudioTimeMs + 3500,
   );
 
   let anchorFret = 1;
   if (upcomingFretted.length > 0) {
-    // Use the earliest upcoming fretted note's fret as the primary hand anchor,
-    // adjusting if the immediate next notes span up to +3 frets above it
-    const firstFret = upcomingFretted[0].fret;
-    const windowSlice = upcomingFretted.slice(0, 5).map((n) => n.fret);
+    const firstFret = Math.min(maxFret, upcomingFretted[0].fret);
+    const windowSlice = upcomingFretted
+      .slice(0, 5)
+      .map((n) => Math.min(maxFret, n.fret));
     const minSlice = Math.min(...windowSlice);
     const maxSlice = Math.max(...windowSlice);
 
@@ -291,10 +281,11 @@ export function computeActiveHandPosition(
       anchorFret = firstFret;
     }
   } else {
-    // Fallback: find the next fretted note anywhere ahead in the song
-    const nextAny = notes.find((n) => n.fret > 0 && n.timeMs > currentTimeMs);
+    const nextAny = notes.find(
+      (n) => n.fret > 0 && n.timeMs > currentAudioTimeMs,
+    );
     if (nextAny) {
-      anchorFret = nextAny.fret;
+      anchorFret = Math.min(maxFret, nextAny.fret);
     }
   }
 
@@ -321,11 +312,10 @@ const PITCH_CLASS_NAMES = [
 ] as const;
 
 /**
- * Infers a readable chord symbol (e.g. E5, G5, C5, B5, A5, Dm, C, Am) from a simultaneous group of notes.
+ * Infers a readable chord symbol (e.g. Dm, A5, E5, G5, C5, B5, C, Am) from a simultaneous group of notes.
  */
 export function inferChordName(notes: readonly ChartNote[]): string {
   if (notes.length === 0) return '';
-  // Sort from lowest string (highest string number, lowest pitch) to highest
   const sorted = [...notes].sort((a, b) => a.midi_pitch - b.midi_pitch);
   const rootMidi = sorted[0].midi_pitch;
   const rootClass = ((rootMidi % 12) + 12) % 12;

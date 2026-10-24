@@ -9,15 +9,21 @@ import {
   fretToWorldX,
   fretWireToWorldX,
   getStringRailSpec,
-  highwayDistToWorldYZ,
   isNoteActiveAtHitBar,
   isZVisible,
+  normalizeSpeedUnitsPerSec,
   projectTimeToZ,
-  stringToWorldX,
   stringToWorldY,
   type ChordCluster,
   type HighwayConfig,
 } from './coordinates';
+import { ParticleSystem } from './particles';
+import {
+  ScoringEngine,
+  type HitEvaluationResult,
+  type MissedNoteEvent,
+  type ScoreState,
+} from './scoring';
 
 export {
   DEFAULT_HIGHWAY_CONFIG,
@@ -28,33 +34,45 @@ export {
   fretToWorldX,
   fretWireToWorldX,
   getStringRailSpec,
-  highwayDistToWorldYZ,
   isNoteActiveAtHitBar,
   isZVisible,
+  normalizeSpeedUnitsPerSec,
   projectTimeToZ,
-  stringToWorldX,
   stringToWorldY,
   type ChordCluster,
   type HighwayConfig,
 };
 
+export interface HighwayCallbacks {
+  onNoteHit?: (result: HitEvaluationResult) => void;
+  onNoteMiss?: (miss: MissedNoteEvent) => void;
+}
+
 interface NoteRenderObject {
   note: ChartNote;
   index: number;
   baseX: number;
-  baseY: number;
-  group: THREE.Group;
-  gemMesh: THREE.Mesh;
-  gemMaterial: THREE.MeshStandardMaterial;
+  fretboardY: number;
+  highwayLaneOffset: number;
+  originalColorHex: number;
+  isDesaturatedMissed: boolean;
+  // 3D highway note group (travels along the elevated -Z highway ramp)
+  highwayGroup: THREE.Group;
+  hwGemMat: THREE.MeshStandardMaterial;
   tailMesh: THREE.Mesh;
-  tailMaterial: THREE.MeshBasicMaterial;
-  badgeSprite: THREE.Sprite;
+  tailMat: THREE.MeshBasicMaterial;
+  stemLine: THREE.Line;
+  stemMat: THREE.LineBasicMaterial;
+  hwSpriteMat: THREE.SpriteMaterial;
+  // Target fretboard note group (pinned on its exact colored string rail at Z=0)
+  fretboardNoteGroup: THREE.Group;
+  fbGemMesh: THREE.Mesh;
+  fbGemMaterial: THREE.MeshStandardMaterial;
 }
 
 interface ChordClusterRenderObject {
   cluster: ChordCluster;
   baseX: number;
-  baseY: number;
   group: THREE.Group;
   wireframe: THREE.LineSegments;
   boxMat: THREE.MeshBasicMaterial;
@@ -67,6 +85,12 @@ interface BeatLineRenderObject {
   group: THREE.Group;
 }
 
+/** Standard fret markers shown below the target fretboard */
+const STANDARD_FRET_LABELS = new Set([1, 2, 3, 5, 7, 9, 12, 15]);
+
+/** Upward slope (dY / d(-Z)) of the highway ramp starting from the top edge of the target fretboard */
+const HIGHWAY_SLOPE_Y = 0.22;
+
 export class HighwayEngine {
   private readonly container: HTMLElement;
   private readonly config: HighwayConfig;
@@ -74,18 +98,27 @@ export class HighwayEngine {
   private readonly camera: THREE.PerspectiveCamera;
   private readonly renderer: THREE.WebGLRenderer;
 
+  private readonly backdropGroup = new THREE.Group();
   private readonly fretboardGroup = new THREE.Group();
   private readonly highwayRampGroup = new THREE.Group();
   private readonly measuresGroup = new THREE.Group();
   private readonly notesGroup = new THREE.Group();
+  private readonly fretboardNotesGroup = new THREE.Group();
   private readonly chordsGroup = new THREE.Group();
 
-  private readonly fretboardStringMats: Map<number, THREE.MeshStandardMaterial> =
-    new Map();
-  private readonly highwayStringMats: Map<number, THREE.MeshBasicMaterial> =
-    new Map();
+  private readonly fretLabelSprites: Map<number, THREE.Sprite> = new Map();
+  private readonly stringRailMaterials: Map<
+    number,
+    THREE.MeshStandardMaterial
+  > = new Map();
+  private readonly stringRailMeshes: Map<number, THREE.Mesh> = new Map();
+  private readonly stringRailPulses: Map<number, number> = new Map();
 
-  // Active 4-fret hand position bracket on the pinned fretboard
+  public readonly scoring = new ScoringEngine();
+  private readonly particles = new ParticleSystem();
+  private callbacks: HighwayCallbacks = {};
+
+  // Active 4-fret hand position bracket on the pinned fretboard & highway
   private handBracketGroup = new THREE.Group();
   private handBracketCurrentX = 0;
   private handBracketTargetX = 0;
@@ -93,16 +126,23 @@ export class HighwayEngine {
     startFret: 1,
     endFret: 4,
   };
+  private lastHighlightedHandKey = '';
+
+  private highwayStartY = 1.62;
 
   private chartNotes: ChartNote[] = [];
+  private chartMeasures: ChartMeasure[] = [];
   private noteObjects: NoteRenderObject[] = [];
   private chordObjects: ChordClusterRenderObject[] = [];
   private beatLineObjects: BeatLineRenderObject[] = [];
   private badgeTextureCache: Map<string, THREE.CanvasTexture> = new Map();
   private chordLabelCache: Map<string, THREE.CanvasTexture> = new Map();
+  private fretLabelTextureCache: Map<string, THREE.CanvasTexture> = new Map();
 
-  private currentTimeMs = 0;
-  private speedMultiplier: number;
+  private currentAudioTimeMs = 0;
+  private baseSpeedAt120Bpm: number;
+  private currentBpm = 120;
+  private speed: number;
   private activeNotesAtHitBar: ChartNote[] = [];
 
   private readonly handleResizeBound: () => void;
@@ -110,22 +150,31 @@ export class HighwayEngine {
   constructor(
     container: HTMLElement,
     config: Partial<HighwayConfig> = {},
+    callbacks: HighwayCallbacks = {},
   ) {
     this.container = container;
     this.config = { ...DEFAULT_HIGHWAY_CONFIG, ...config };
-    this.speedMultiplier = this.config.speedMultiplier;
+    this.callbacks = callbacks;
+    this.baseSpeedAt120Bpm = normalizeSpeedUnitsPerSec(
+      this.config.speed ?? this.config.speedMultiplier,
+    );
+    this.speed = this.baseSpeedAt120Bpm;
+
+    const y1 = stringToWorldY(1, this.config);
+    const y6 = stringToWorldY(6, this.config);
+    this.highwayStartY = Math.max(y1, y6) + 0.18;
 
     // 1. Scene Setup
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x060913);
-    this.scene.fog = new THREE.FogExp2(0x060913, 0.016);
+    this.scene.background = new THREE.Color(0x060911);
+    this.scene.fog = new THREE.FogExp2(0x060911, 0.016);
 
-    // 2. Camera looking at the pinned horizontal fretboard at bottom and ~30° highway behind it
+    // 2. Yousician Perspective Camera framing the Target Fretboard at bottom and Highway above it
     const width = Math.max(1, container.clientWidth || window.innerWidth);
     const height = Math.max(1, container.clientHeight || window.innerHeight);
-    this.camera = new THREE.PerspectiveCamera(48, width / height, 0.1, 140);
-    this.camera.position.set(-0.6, 2.35, 13.2);
-    this.camera.lookAt(-0.6, 1.05, 0);
+    this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 150);
+    this.camera.position.set(5.0, 3.8, 6.5);
+    this.camera.lookAt(5.0, 1.35, -10.0);
 
     // 3. WebGLRenderer
     this.renderer = new THREE.WebGLRenderer({
@@ -135,116 +184,167 @@ export class HighwayEngine {
     this.renderer.setSize(width, height);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.12;
     this.container.appendChild(this.renderer.domElement);
 
-    // 4. Build Scene Lighting, Pinned Fretboard Target Bar, and 30° Perspective Highway
+    // 4. Build Scene Lighting, Backdrop, Target Fretboard (Z=0), and -Z Highway
     this.setupLights();
+    this.buildYousicianBackdrop();
     this.buildPinnedFretboardTargetBar();
     this.buildPerspectiveHighwayRamp();
 
+    this.scene.add(this.backdropGroup);
     this.scene.add(this.highwayRampGroup);
     this.scene.add(this.measuresGroup);
     this.scene.add(this.chordsGroup);
     this.scene.add(this.notesGroup);
     this.scene.add(this.fretboardGroup);
+    this.scene.add(this.fretboardNotesGroup);
+    this.scene.add(this.particles.group);
 
     // 5. Window Resize Listener
     this.handleResizeBound = () => this.onWindowResize();
     window.addEventListener('resize', this.handleResizeBound);
   }
 
+  public setCallbacks(callbacks: HighwayCallbacks): void {
+    this.callbacks = callbacks;
+  }
+
   private setupLights(): void {
-    const ambientLight = new THREE.AmbientLight(0xe2e8f0, 0.9);
+    const ambientLight = new THREE.AmbientLight(0xe2e8f0, 0.95);
     this.scene.add(ambientLight);
 
     const keyLight = new THREE.DirectionalLight(0xffffff, 1.35);
-    keyLight.position.set(2, 12, 14);
+    keyLight.position.set(5.0, 12.0, 10.0);
     this.scene.add(keyLight);
 
-    const fretboardGlow = new THREE.PointLight(0x38bdf8, 1.8, 22, 1.4);
-    fretboardGlow.position.set(0, 0.5, 3.0);
+    const fretboardGlow = new THREE.PointLight(0x38bdf8, 1.2, 24, 1.4);
+    fretboardGlow.position.set(5.0, 1.5, 3.0);
     this.scene.add(fretboardGlow);
   }
 
   /**
-   * Builds the Pinned Fretboard Target Bar at Z=0:
-   * - 6 horizontal colored strings (String 6/Low E at top down to String 1/High E at bottom)
-   * - Vertical metallic fret wires across frets 0 through 24 with numbered labels underneath
-   * - Glowing green active 4-fret hand position bracket
+   * Computes the highway floor Y coordinate for a given world Z (z <= 0).
+   * Starts at the top edge of the target fretboard at Z=0 and slopes upward into -Z
+   * so the highway never passes behind the target fretboard strings.
    */
-  private buildPinnedFretboardTargetBar(): void {
-    const totalFretWidth = this.config.maxFret * this.config.fretSpacingX;
-    const nutPadLeft = this.config.fretSpacingX * 0.9;
-    const boardWidth = totalFretWidth + nutPadLeft + 0.4;
-    const boardCenterX = -nutPadLeft / 2;
-    const boardHeight = this.config.stringSpacingY * 5 + 0.52;
+  private getHighwayFloorY(worldZ: number): number {
+    const dist = Math.max(0, -worldZ);
+    return this.highwayStartY + dist * HIGHWAY_SLOPE_Y;
+  }
 
-    // Rosewood / Ebony fretboard backing slab at Z=0
-    const boardGeo = new THREE.BoxGeometry(boardWidth, boardHeight, 0.16);
-    const boardMat = new THREE.MeshStandardMaterial({
-      color: 0x111827,
-      roughness: 0.65,
-      metalness: 0.25,
-    });
-    const boardMesh = new THREE.Mesh(boardGeo, boardMat);
-    boardMesh.position.set(boardCenterX, 0, -0.09);
-    this.fretboardGroup.add(boardMesh);
+  /**
+   * Builds the subtle Yousician-style particle wave nebula backdrop on the left & right flanks.
+   */
+  private buildYousicianBackdrop(): void {
+    const positions: number[] = [];
+    const colors: number[] = [];
+    const cLeft = new THREE.Color(0x0ea5e9);
+    const cRight = new THREE.Color(0xf97316);
 
-    // Top & bottom metallic fretboard bevel trim
-    const trimGeo = new THREE.BoxGeometry(boardWidth, 0.05, 0.2);
-    const trimMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      emissive: 0x0ea5e9,
-      emissiveIntensity: 0.35,
-      roughness: 0.3,
-      metalness: 0.8,
-    });
-    for (const sign of [-1, 1]) {
-      const trim = new THREE.Mesh(trimGeo, trimMat);
-      trim.position.set(boardCenterX, sign * (boardHeight / 2 + 0.02), -0.06);
-      this.fretboardGroup.add(trim);
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 26; i++) {
+        for (let j = 0; j < 16; j++) {
+          const u = i / 25;
+          const v = j / 15;
+          const x = 5.0 + side * (6.2 + u * 10.5);
+          const z = -3.0 - v * 32.0;
+          const wave =
+            Math.sin(u * Math.PI * 2.2 + v * 3.5) * 1.2 +
+            Math.cos(v * Math.PI * 2.0) * 0.7;
+          const y = 2.6 + wave + v * 4.5;
+          positions.push(x, y, z);
+
+          const col = side < 0 ? cLeft : cRight;
+          colors.push(col.r, col.g, col.b);
+        }
+      }
     }
 
-    // Vertical metallic fret wires across Frets 0 (Nut) through 24 + numbered labels underneath
-    const nutWireGeo = new THREE.CylinderGeometry(0.042, 0.042, boardHeight, 12);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(positions, 3),
+    );
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    const mat = new THREE.PointsMaterial({
+      size: 0.13,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.32,
+    });
+    this.backdropGroup.add(new THREE.Points(geo, mat));
+  }
+
+  /**
+   * Builds the Target Fretboard at Z = 0:
+   * - 6 horizontal colored rails spanning X (Frets 0 to 15), String 6 (Low E Red) on top down to String 1 (High E Purple) on bottom.
+   * - Vertical metallic fret wires for frets 0 to 15 spaced along X, with numeric labels below.
+   * - Active hand position bracket: Highlighted green outline bounding the active 4-fret region.
+   */
+  private buildPinnedFretboardTargetBar(): void {
+    const nutX = fretWireToWorldX(0, this.config);
+    const maxWireX = fretWireToWorldX(this.config.maxFret, this.config);
+    const boardWidth = maxWireX - nutX + 0.35;
+    const boardCenterX = (nutX + maxWireX) / 2 + 0.08;
+
+    const y1 = stringToWorldY(1, this.config);
+    const y6 = stringToWorldY(6, this.config);
+    const bottomStringY = Math.min(y1, y6);
+    const topStringY = Math.max(y1, y6);
+    const boardCenterY = (bottomStringY + topStringY) / 2;
+    const boardHeight = topStringY - bottomStringY + 0.32;
+
+    // Solid dark fretboard backing slab at Z = 0
+    const boardGeo = new THREE.BoxGeometry(boardWidth, boardHeight, 0.1);
+    const boardMat = new THREE.MeshStandardMaterial({
+      color: 0x0b0f19,
+      roughness: 0.65,
+      metalness: 0.2,
+    });
+    const boardMesh = new THREE.Mesh(boardGeo, boardMat);
+    boardMesh.position.set(boardCenterX, boardCenterY, -0.06);
+    this.fretboardGroup.add(boardMesh);
+
+    // Sculpted maple guitar neck/headstock end piece to the left of Fret 0
+    const neckWidth = 1.45;
+    const neckGeo = new THREE.CylinderGeometry(
+      boardHeight * 0.54,
+      boardHeight * 0.64,
+      neckWidth,
+      20,
+    );
+    neckGeo.rotateZ(Math.PI / 2);
+    neckGeo.scale(1, 1, 0.35);
+    const neckMat = new THREE.MeshStandardMaterial({
+      color: 0xd4a373,
+      roughness: 0.48,
+      metalness: 0.08,
+    });
+    const neckMesh = new THREE.Mesh(neckGeo, neckMat);
+    neckMesh.position.set(nutX - neckWidth / 2 - 0.03, boardCenterY, -0.02);
+    this.fretboardGroup.add(neckMesh);
+
+    // Vertical metallic fret wires for frets 0 (nut) to 15 spaced along X
+    const nutWireGeo = new THREE.BoxGeometry(0.09, boardHeight + 0.04, 0.13);
     const nutWireMat = new THREE.MeshStandardMaterial({
       color: 0xf8fafc,
-      emissive: 0xe2e8f0,
-      emissiveIntensity: 0.4,
-      roughness: 0.2,
-      metalness: 0.85,
+      roughness: 0.25,
+      metalness: 0.3,
     });
 
     const fretWireGeo = new THREE.CylinderGeometry(
-      0.022,
-      0.022,
-      boardHeight - 0.04,
+      0.018,
+      0.018,
+      boardHeight,
       10,
     );
     const fretWireMat = new THREE.MeshStandardMaterial({
       color: 0x94a3b8,
-      roughness: 0.22,
-      metalness: 0.9,
+      roughness: 0.25,
+      metalness: 0.85,
     });
-
-    const inlaySingleFrets = new Set([3, 5, 7, 9, 15, 17, 19, 21]);
-    const inlayDoubleFrets = new Set([12, 24]);
-    const inlayGeo = new THREE.CircleGeometry(0.075, 16);
-    const inlayMat = new THREE.MeshBasicMaterial({
-      color: 0x475569,
-      transparent: true,
-      opacity: 0.55,
-    });
-
-    // Fret 0 label underneath the nut slot
-    const zeroLabel = this.createFretNumberSprite('0', true);
-    zeroLabel.position.set(
-      fretToWorldX(0, this.config),
-      -boardHeight / 2 - 0.28,
-      0.05,
-    );
-    this.fretboardGroup.add(zeroLabel);
 
     for (let f = 0; f <= this.config.maxFret; f++) {
       const wireX = fretWireToWorldX(f, this.config);
@@ -252,40 +352,26 @@ export class HighwayEngine {
         f === 0 ? nutWireGeo : fretWireGeo,
         f === 0 ? nutWireMat : fretWireMat,
       );
-      wireMesh.position.set(wireX, 0, 0);
+      wireMesh.position.set(wireX, boardCenterY, 0);
       this.fretboardGroup.add(wireMesh);
 
       if (f >= 1) {
         const slotCenterX = fretToWorldX(f, this.config);
-        const isMarker =
-          inlaySingleFrets.has(f) || inlayDoubleFrets.has(f);
-
-        // Numbered fret label (1..24) underneath the fretboard
-        const fretLabel = this.createFretNumberSprite(String(f), isMarker);
-        fretLabel.position.set(slotCenterX, -boardHeight / 2 - 0.28, 0.05);
-        this.fretboardGroup.add(fretLabel);
-
-        // Classic fretboard inlay dots
-        if (inlaySingleFrets.has(f)) {
-          const dot = new THREE.Mesh(inlayGeo, inlayMat);
-          dot.position.set(slotCenterX, 0, -0.005);
-          this.fretboardGroup.add(dot);
-        } else if (inlayDoubleFrets.has(f)) {
-          for (const offsetY of [-0.55, 0.55]) {
-            const dot = new THREE.Mesh(inlayGeo, inlayMat);
-            dot.position.set(slotCenterX, offsetY, -0.005);
-            this.fretboardGroup.add(dot);
-          }
-        }
+        const isStandardLabel = STANDARD_FRET_LABELS.has(f);
+        const fretSprite = this.createFretNumberSprite(
+          String(f),
+          isStandardLabel ? 'standard' : 'dim',
+        );
+        fretSprite.position.set(slotCenterX, bottomStringY - 0.31, 0.05);
+        fretSprite.visible = isStandardLabel;
+        this.fretboardGroup.add(fretSprite);
+        this.fretLabelSprites.set(f, fretSprite);
       }
     }
 
-    // 6 Horizontal Colored Strings (String 6 / Low E at top down to String 1 / High E at bottom)
+    // 6 stagnant horizontal colored string rails spanning X (Frets 0 to 15)
     for (const railSpec of STRING_RAILS) {
-      const y = stringToWorldY(
-        railSpec.stringNumber,
-        this.config.stringSpacingY,
-      );
+      const y = stringToWorldY(railSpec.stringNumber, this.config);
       const strGeo = new THREE.CylinderGeometry(
         railSpec.radius,
         railSpec.radius,
@@ -299,65 +385,63 @@ export class HighwayEngine {
         emissive: railSpec.colorHex,
         emissiveIntensity: 0.55,
         roughness: 0.25,
-        metalness: 0.7,
+        metalness: 0.6,
       });
       const strMesh = new THREE.Mesh(strGeo, strMat);
-      strMesh.position.set(boardCenterX, y, 0.025);
+      strMesh.position.set(boardCenterX, y, 0.02);
       this.fretboardGroup.add(strMesh);
-      this.fretboardStringMats.set(railSpec.stringNumber, strMat);
-
-      // String name badge on the left edge of the fretboard
-      const badge = this.createLaneLabelSprite(
-        railSpec.label,
-        railSpec.colorCss,
-      );
-      badge.position.set(
-        fretWireToWorldX(0, this.config) - this.config.fretSpacingX * 1.35,
-        y,
-        0.06,
-      );
-      this.fretboardGroup.add(badge);
+      this.stringRailMaterials.set(railSpec.stringNumber, strMat);
+      this.stringRailMeshes.set(railSpec.stringNumber, strMesh);
+      this.stringRailPulses.set(railSpec.stringNumber, 0);
     }
 
-    // Active 4-Fret Hand Position Bracket (glowing green highlight)
+    // Active 4-Fret Hand Position Bracket (highlighted green outline on fretboard + sloped side rails on highway)
     const bracketWidth = this.config.fretSpacingX * 4;
-    const bracketHeight = boardHeight + 0.16;
+    const bracketHeight = boardHeight + 0.1;
 
-    const bracketFillGeo = new THREE.PlaneGeometry(
-      bracketWidth,
-      bracketHeight,
-    );
+    const bracketFillGeo = new THREE.PlaneGeometry(bracketWidth, bracketHeight);
     const bracketFillMat = new THREE.MeshBasicMaterial({
-      color: 0x22c55e,
+      color: 0x4caf50,
       transparent: true,
-      opacity: 0.14,
+      opacity: 0.1,
       side: THREE.DoubleSide,
     });
     const bracketFill = new THREE.Mesh(bracketFillGeo, bracketFillMat);
+    bracketFill.position.set(0, boardCenterY, 0);
     this.handBracketGroup.add(bracketFill);
 
     const bracketBoxGeo = new THREE.BoxGeometry(
       bracketWidth,
       bracketHeight,
-      0.18,
+      0.08,
     );
     const bracketEdges = new THREE.EdgesGeometry(bracketBoxGeo);
     const bracketLineMat = new THREE.LineBasicMaterial({
       color: 0x4ade80,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.92,
     });
     const bracketWire = new THREE.LineSegments(bracketEdges, bracketLineMat);
+    bracketWire.position.set(0, boardCenterY, 0);
     this.handBracketGroup.add(bracketWire);
 
-    // Top glowing header bar on the active hand position bracket
-    const topBarGeo = new THREE.BoxGeometry(bracketWidth, 0.07, 0.22);
-    const topBarMat = new THREE.MeshBasicMaterial({
-      color: 0x22c55e,
-    });
-    const topBar = new THREE.Mesh(topBarGeo, topBarMat);
-    topBar.position.set(0, bracketHeight / 2, 0.04);
-    this.handBracketGroup.add(topBar);
+    // Glowing green highway side rails starting at the top of the bracket and sloping up the highway into -Z
+    const maxDist = this.config.highwayLengthDist;
+    const farY = this.getHighwayFloorY(-maxDist);
+    for (const sign of [-1, 1]) {
+      const railX = sign * (bracketWidth / 2);
+      const points = [
+        new THREE.Vector3(railX, this.highwayStartY, 0),
+        new THREE.Vector3(railX, farY, -maxDist),
+      ];
+      const railGeo = new THREE.BufferGeometry().setFromPoints(points);
+      const railMat = new THREE.LineBasicMaterial({
+        color: 0x4ade80,
+        transparent: true,
+        opacity: 0.85,
+      });
+      this.handBracketGroup.add(new THREE.Line(railGeo, railMat));
+    }
 
     this.handBracketCurrentX = this.computeBracketCenterX(1);
     this.handBracketTargetX = this.handBracketCurrentX;
@@ -372,62 +456,69 @@ export class HighwayEngine {
   }
 
   /**
-   * Builds the Perspective Highway extending back into the scene from Z=0 at a ~30° elevation angle.
+   * Builds a stagnant dark slate Highway starting from the top edge of the Target Fretboard at Z = 0
+   * and sloping upward into -Z (never flashing colors and never passing behind the fretboard strings).
    */
   private buildPerspectiveHighwayRamp(): void {
     const maxDist = this.config.highwayLengthDist;
-    const farYZ = highwayDistToWorldYZ(
-      maxDist,
-      this.config.highwayElevationDeg,
-    );
+    const nutX = fretWireToWorldX(0, this.config);
+    const maxWireX = fretWireToWorldX(this.config.maxFret, this.config);
+    const highwayWidth = maxWireX - nutX;
+    const highwayCenterX = (nutX + maxWireX) / 2;
 
-    // Fret lane guide lines extending from each fret wire at Z=0 back along the 30° highway slope
+    const nearY = this.getHighwayFloorY(0);
+    const farY = this.getHighwayFloorY(-maxDist);
+    const dy = farY - nearY;
+    const rampLen = Math.hypot(maxDist, dy);
+    const slopeAngle = Math.atan2(dy, maxDist);
+
+    // Stagnant dark slate highway floor bed
+    const floorGeo = new THREE.PlaneGeometry(highwayWidth, rampLen);
+    floorGeo.rotateX(-Math.PI / 2 + slopeAngle);
+    const floorMat = new THREE.MeshBasicMaterial({
+      color: 0x090e1a,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+    });
+    const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+    floorMesh.position.set(
+      highwayCenterX,
+      (nearY + farY) / 2 - 0.02,
+      -maxDist / 2,
+    );
+    this.highwayRampGroup.add(floorMesh);
+
+    // Stagnant fret lane guide lines extending from Z=0 into -Z along the highway slope
     for (let f = 0; f <= this.config.maxFret; f++) {
       const x = fretWireToWorldX(f, this.config);
-      const isHighlight = f === 0 || f % 5 === 0 || f === 12 || f === 24;
+      const isHighlight = STANDARD_FRET_LABELS.has(f) || f === 0;
       const points = [
-        new THREE.Vector3(x, 0, 0),
-        new THREE.Vector3(x, farYZ.yOffset, farYZ.z),
+        new THREE.Vector3(x, nearY, 0),
+        new THREE.Vector3(x, farY, -maxDist),
       ];
       const lineGeo = new THREE.BufferGeometry().setFromPoints(points);
       const lineMat = new THREE.LineBasicMaterial({
-        color: isHighlight ? 0x38bdf8 : 0x1e293b,
+        color: isHighlight ? 0x334155 : 0x1e293b,
         transparent: true,
-        opacity: isHighlight ? 0.32 : 0.16,
+        opacity: isHighlight ? 0.6 : 0.32,
       });
       this.highwayRampGroup.add(new THREE.Line(lineGeo, lineMat));
     }
 
-    // 6 colored string guide rails extending back into the scene at 30° from each string's Y position
-    for (const railSpec of STRING_RAILS) {
-      const baseY = stringToWorldY(
-        railSpec.stringNumber,
-        this.config.stringSpacingY,
-      );
-      const leftX = fretToWorldX(0, this.config);
-      const rightX = fretWireToWorldX(this.config.maxFret, this.config);
-
-      // Subtle translucent horizontal ribbon along the string plane
-      const ribbonWidth = rightX - leftX;
-      const ribbonCenterX = (leftX + rightX) / 2;
-      const ribbonGeo = new THREE.PlaneGeometry(ribbonWidth, maxDist);
-      const rad = (this.config.highwayElevationDeg * Math.PI) / 180;
-      ribbonGeo.rotateX(-Math.PI / 2 + rad);
-
-      const ribbonMat = new THREE.MeshBasicMaterial({
-        color: railSpec.colorHex,
-        transparent: true,
-        opacity: 0.045,
-        side: THREE.DoubleSide,
-      });
-      const ribbonMesh = new THREE.Mesh(ribbonGeo, ribbonMat);
-      ribbonMesh.position.set(
-        ribbonCenterX,
-        baseY + farYZ.yOffset / 2,
-        farYZ.z / 2,
-      );
-      this.highwayRampGroup.add(ribbonMesh);
-      this.highwayStringMats.set(railSpec.stringNumber, ribbonMat);
+    // Highway floor fret number markers (3, 5, 7, 9, 12, 15) along -Z
+    for (const zMarker of [-5.5, -14.5]) {
+      const markerY = this.getHighwayFloorY(zMarker) + 0.1;
+      for (const f of [3, 5, 7, 9, 12, 15]) {
+        if (f > this.config.maxFret) continue;
+        const markerSprite = this.createFretNumberSprite(String(f), 'standard');
+        markerSprite.position.set(
+          fretToWorldX(f, this.config),
+          markerY,
+          zMarker,
+        );
+        this.highwayRampGroup.add(markerSprite);
+      }
     }
   }
 
@@ -437,15 +528,25 @@ export class HighwayEngine {
   public loadChart(chart: ChartData): void {
     this.clearChartObjects();
     this.chartNotes = chart.notes;
+    this.chartMeasures = chart.measures;
+    this.scoring.loadNotes(chart.notes);
+    this.particles.clear();
+    const initialBpm =
+      chart.measures[0]?.bpm || chart.metadata?.initialBpm || 120;
+    this.currentBpm = initialBpm > 0 ? initialBpm : 120;
+    this.speed = this.baseSpeedAt120Bpm * (this.currentBpm / 120);
     this.buildMeasureAndBeatLines(chart.measures);
     this.buildNoteObjects(chart.notes);
     this.buildChordClusterObjects(chart.notes);
-    this.update(this.currentTimeMs);
+    this.update(this.currentAudioTimeMs);
   }
 
   private clearChartObjects(): void {
     while (this.notesGroup.children.length > 0) {
       this.notesGroup.remove(this.notesGroup.children[0]);
+    }
+    while (this.fretboardNotesGroup.children.length > 0) {
+      this.fretboardNotesGroup.remove(this.fretboardNotesGroup.children[0]);
     }
     while (this.chordsGroup.children.length > 0) {
       this.chordsGroup.remove(this.chordsGroup.children[0]);
@@ -459,23 +560,23 @@ export class HighwayEngine {
   }
 
   private buildMeasureAndBeatLines(measures: ChartMeasure[]): void {
-    const leftX = fretToWorldX(0, this.config) - 0.2;
-    const rightX = fretWireToWorldX(this.config.maxFret, this.config) + 0.2;
+    const leftX = fretWireToWorldX(0, this.config);
+    const rightX = fretWireToWorldX(this.config.maxFret, this.config);
     const totalWidth = rightX - leftX;
     const centerX = (leftX + rightX) / 2;
 
-    const measureBarGeo = new THREE.BoxGeometry(totalWidth, 0.03, 0.06);
+    const measureBarGeo = new THREE.BoxGeometry(totalWidth, 0.016, 0.04);
     const measureBarMat = new THREE.MeshBasicMaterial({
-      color: 0x64748b,
+      color: 0x475569,
       transparent: true,
       opacity: 0.45,
     });
 
-    const beatBarGeo = new THREE.BoxGeometry(totalWidth - 0.4, 0.015, 0.03);
+    const beatBarGeo = new THREE.BoxGeometry(totalWidth, 0.01, 0.02);
     const beatBarMat = new THREE.MeshBasicMaterial({
-      color: 0x334155,
+      color: 0x1e293b,
       transparent: true,
-      opacity: 0.22,
+      opacity: 0.3,
     });
 
     for (const measure of measures) {
@@ -483,10 +584,6 @@ export class HighwayEngine {
       const mMesh = new THREE.Mesh(measureBarGeo, measureBarMat);
       mMesh.position.set(centerX, 0, 0);
       mGroup.add(mMesh);
-
-      const numSprite = this.createMeasureLabelSprite(`M${measure.number}`);
-      numSprite.position.set(leftX - 0.65, 0, 0);
-      mGroup.add(numSprite);
 
       this.measuresGroup.add(mGroup);
       this.beatLineObjects.push({
@@ -517,84 +614,133 @@ export class HighwayEngine {
     }
   }
 
+  /**
+   * Builds:
+   * 1. Highway Note Capsules (traveling down the -Z highway ramp above the fretboard)
+   * 2. Pinned Fretboard Target Capsules (sitting directly on their colored string rail at Z=0
+   *    when the note is in the active lookahead/hit window, matching Yousician's UI).
+   */
   private buildNoteObjects(notes: ChartNote[]): void {
-    // Rounded rectangular capsule geometry oriented horizontally inside its fret slot
-    const capsuleGeo = new THREE.CapsuleGeometry(0.135, 0.28, 10, 16);
+    const capsuleGeo = new THREE.CapsuleGeometry(0.082, 0.24, 8, 16);
     capsuleGeo.rotateZ(Math.PI / 2);
+    capsuleGeo.scale(1, 0.85, 0.65);
 
-    // Sustain tail extending back along the ~30° highway slope
-    const rad = (this.config.highwayElevationDeg * Math.PI) / 180;
-    const tailGeo = new THREE.BoxGeometry(0.18, 0.045, 1.0);
+    const slopeAngle = Math.atan(HIGHWAY_SLOPE_Y);
+    const tailGeo = new THREE.BoxGeometry(0.12, 0.032, 1.0);
     tailGeo.translate(0, 0, -0.5);
-    tailGeo.rotateX(rad);
+    tailGeo.rotateX(slopeAngle);
 
     notes.forEach((note, index) => {
       const railSpec = getStringRailSpec(note.string);
       const baseX = fretToWorldX(note.fret, this.config);
-      const baseY = stringToWorldY(note.string, this.config.stringSpacingY);
+      const fretboardY = stringToWorldY(note.string, this.config);
+      // Height above the highway floor corresponding to the string (String 6 highest, String 1 lowest)
+      const highwayLaneOffset = 0.14 + (note.string - 1) * 0.08;
 
-      const group = new THREE.Group();
-      group.position.set(baseX, baseY, 0);
-
-      const gemMaterial = new THREE.MeshStandardMaterial({
+      // A. Highway 3D note group (for z < 0 along the highway)
+      const highwayGroup = new THREE.Group();
+      const hwGemMat = new THREE.MeshStandardMaterial({
         color: railSpec.colorHex,
         emissive: railSpec.colorHex,
-        emissiveIntensity: 0.55,
+        emissiveIntensity: 0.6,
         roughness: 0.22,
-        metalness: 0.3,
+        metalness: 0.25,
       });
-      const gemMesh = new THREE.Mesh(capsuleGeo, gemMaterial);
-      group.add(gemMesh);
+      const hwGemMesh = new THREE.Mesh(capsuleGeo, hwGemMat);
+      highwayGroup.add(hwGemMesh);
 
-      const tailMaterial = new THREE.MeshBasicMaterial({
+      const tailMat = new THREE.MeshBasicMaterial({
         color: railSpec.colorHex,
         transparent: true,
-        opacity: 0.4,
+        opacity: 0.38,
       });
-      const tailMesh = new THREE.Mesh(tailGeo, tailMaterial);
-      const tailLen = Math.max(
-        0.08,
-        durationToWorldZ(note.durationMs, this.speedMultiplier) * 0.78,
-      );
-      tailMesh.scale.set(1, 1, tailLen);
-      group.add(tailMesh);
+      const tailMesh = new THREE.Mesh(tailGeo, tailMat);
+      highwayGroup.add(tailMesh);
 
-      // Fret number badge (0–24) centered on the rounded capsule
+      const stemPoints = [
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, -highwayLaneOffset, 0),
+      ];
+      const stemGeo = new THREE.BufferGeometry().setFromPoints(stemPoints);
+      const stemMat = new THREE.LineBasicMaterial({
+        color: railSpec.colorHex,
+        transparent: true,
+        opacity: 0.55,
+      });
+      const stemLine = new THREE.Line(stemGeo, stemMat);
+      highwayGroup.add(stemLine);
+
       const badgeTexture = this.getOrCreateFretBadgeTexture(
         note.fret,
         railSpec.colorCss,
         note.technique,
       );
-      const spriteMat = new THREE.SpriteMaterial({
+      const hwSpriteMat = new THREE.SpriteMaterial({
         map: badgeTexture,
         transparent: true,
         depthTest: false,
       });
-      const badgeSprite = new THREE.Sprite(spriteMat);
-      badgeSprite.position.set(0, 0, 0.16);
-      badgeSprite.scale.set(0.58, 0.38, 1);
-      badgeSprite.renderOrder = 12;
-      group.add(badgeSprite);
+      const hwBadge = new THREE.Sprite(hwSpriteMat);
+      hwBadge.position.set(0, 0, 0.02);
+      hwBadge.scale.set(0.38, 0.24, 1);
+      hwBadge.renderOrder = 10;
+      highwayGroup.add(hwBadge);
 
-      this.notesGroup.add(group);
+      this.notesGroup.add(highwayGroup);
+
+      // B. Target Fretboard capsule (pinned directly on its colored string at Z = 0)
+      const fretboardNoteGroup = new THREE.Group();
+      fretboardNoteGroup.position.set(baseX, fretboardY, 0.04);
+
+      const fbGemMaterial = new THREE.MeshStandardMaterial({
+        color: railSpec.colorHex,
+        emissive: railSpec.colorHex,
+        emissiveIntensity: 0.75,
+        roughness: 0.2,
+        metalness: 0.3,
+      });
+      const fbGemMesh = new THREE.Mesh(capsuleGeo, fbGemMaterial);
+      fretboardNoteGroup.add(fbGemMesh);
+
+      const fbSpriteMat = new THREE.SpriteMaterial({
+        map: badgeTexture,
+        transparent: true,
+        depthTest: false,
+      });
+      const fbBadge = new THREE.Sprite(fbSpriteMat);
+      fbBadge.position.set(0, 0, 0.03);
+      fbBadge.scale.set(0.4, 0.25, 1);
+      fbBadge.renderOrder = 15;
+      fretboardNoteGroup.add(fbBadge);
+
+      fretboardNoteGroup.visible = false;
+      this.fretboardNotesGroup.add(fretboardNoteGroup);
+
       this.noteObjects.push({
         note,
         index,
         baseX,
-        baseY,
-        group,
-        gemMesh,
-        gemMaterial,
+        fretboardY,
+        highwayLaneOffset,
+        originalColorHex: railSpec.colorHex,
+        isDesaturatedMissed: false,
+        highwayGroup,
+        hwGemMat,
         tailMesh,
-        tailMaterial,
-        badgeSprite,
+        tailMat,
+        stemLine,
+        stemMat,
+        hwSpriteMat,
+        fretboardNoteGroup,
+        fbGemMesh,
+        fbGemMaterial,
       });
     });
   }
 
   /**
-   * Builds transparent 3D wireframe bounding boxes with overhead chord name labels
-   * for simultaneous chord clusters (e.g. E5, G5, C5, B5, A5, Dm, C).
+   * Groups simultaneous chord notes (e.g., Dm, A5, E5, G5, C5, B5) inside a transparent
+   * wireframe bounding box with a 3D chord label overhead.
    */
   private buildChordClusterObjects(notes: ChartNote[]): void {
     const clusters = extractChordClusters(notes);
@@ -602,52 +748,46 @@ export class HighwayEngine {
     for (const cluster of clusters) {
       const minX = fretToWorldX(cluster.minFret, this.config);
       const maxX = fretToWorldX(cluster.maxFret, this.config);
-      const yA = stringToWorldY(cluster.minString, this.config.stringSpacingY);
-      const yB = stringToWorldY(cluster.maxString, this.config.stringSpacingY);
-      const minY = Math.min(yA, yB);
-      const maxY = Math.max(yA, yB);
 
-      const width = Math.max(this.config.fretSpacingX * 1.15, maxX - minX + 0.72);
-      const height = Math.max(0.55, maxY - minY + 0.48);
-      const depth = 0.36;
+      const width = Math.max(
+        this.config.fretSpacingX * 2.2,
+        maxX - minX + this.config.fretSpacingX * 1.1,
+      );
+      const height = 0.62;
+      const depth = 0.24;
 
       const baseX = (minX + maxX) / 2;
-      const baseY = (minY + maxY) / 2;
 
       const group = new THREE.Group();
-      group.position.set(baseX, baseY, 0);
+      group.position.set(baseX, 0, 0);
 
-      // Translucent 3D bounding box fill
       const boxGeo = new THREE.BoxGeometry(width, height, depth);
       const boxMat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
+        color: 0xe2e8f0,
         transparent: true,
-        opacity: 0.08,
+        opacity: 0.07,
         depthWrite: false,
       });
       const boxMesh = new THREE.Mesh(boxGeo, boxMat);
       group.add(boxMesh);
 
-      // 3D Wireframe edges
       const edgesGeo = new THREE.EdgesGeometry(boxGeo);
       const lineMat = new THREE.LineBasicMaterial({
-        color: 0x38bdf8,
+        color: 0xf8fafc,
         transparent: true,
-        opacity: 0.78,
+        opacity: 0.8,
       });
       const wireframe = new THREE.LineSegments(edgesGeo, lineMat);
       group.add(wireframe);
 
-      // Overhead chord name label (e.g. "E5", "G5", "C5", "Dm")
       const labelSprite = this.createChordLabelSprite(cluster.chordName);
-      labelSprite.position.set(0, height / 2 + 0.28, 0);
+      labelSprite.position.set(-width / 2 + 0.25, height / 2 + 0.2, 0);
       group.add(labelSprite);
 
       this.chordsGroup.add(group);
       this.chordObjects.push({
         cluster,
         baseX,
-        baseY,
         group,
         wireframe,
         boxMat,
@@ -672,9 +812,9 @@ export class HighwayEngine {
     const ctx = canvas.getContext('2d')!;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'rgba(10, 15, 30, 0.92)';
+    ctx.fillStyle = 'rgba(10, 15, 30, 0.9)';
     ctx.strokeStyle = borderColorCss;
-    ctx.lineWidth = 7;
+    ctx.lineWidth = 8;
 
     ctx.beginPath();
     ctx.roundRect(8, 8, canvas.width - 16, canvas.height - 16, 22);
@@ -719,19 +859,14 @@ export class HighwayEngine {
       canvas.height = 80;
       const ctx = canvas.getContext('2d')!;
 
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-      ctx.strokeStyle = '#38bdf8';
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.roundRect(8, 8, canvas.width - 16, canvas.height - 16, 14);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#38bdf8';
-      ctx.font = '900 38px "Inter", sans-serif';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '900 48px "Inter", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(chordName, canvas.width / 2, canvas.height / 2 + 1);
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+      ctx.shadowBlur = 8;
+      ctx.fillText(chordName, canvas.width / 2, canvas.height / 2);
 
       texture = new THREE.CanvasTexture(canvas);
       this.chordLabelCache.set(chordName, texture);
@@ -743,223 +878,432 @@ export class HighwayEngine {
       depthTest: false,
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.82, 0.34, 1);
+    sprite.scale.set(0.76, 0.32, 1);
     sprite.renderOrder = 14;
     return sprite;
   }
 
-  private createFretNumberSprite(
+  private getOrCreateFretNumberTexture(
     text: string,
-    isHighlighted: boolean,
-  ): THREE.Sprite {
+    mode: 'standard' | 'active' | 'dim',
+  ): THREE.CanvasTexture {
+    const key = `${text}_${mode}`;
+    const cached = this.fretLabelTextureCache.get(key);
+    if (cached) return cached;
+
     const canvas = document.createElement('canvas');
     canvas.width = 96;
     canvas.height = 64;
     const ctx = canvas.getContext('2d')!;
 
-    ctx.fillStyle = isHighlighted ? '#f8fafc' : '#64748b';
-    ctx.font = `${isHighlighted ? '800' : '600'} 34px "Inter", monospace`;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle =
+      mode === 'active'
+        ? '#ffeb3b'
+        : mode === 'standard'
+          ? '#cbd5e1'
+          : '#475569';
+    ctx.font = `${mode === 'active' ? '900' : '700'} 38px "Inter", monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, canvas.width / 2, canvas.height / 2);
 
     const texture = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({
-      map: texture,
-      transparent: true,
-      depthTest: false,
-    });
-    const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.42, 0.28, 1);
-    return sprite;
+    this.fretLabelTextureCache.set(key, texture);
+    return texture;
   }
 
-  private createLaneLabelSprite(
+  private createFretNumberSprite(
     text: string,
-    colorCss: string,
+    mode: 'standard' | 'active' | 'dim',
   ): THREE.Sprite {
-    const canvas = document.createElement('canvas');
-    canvas.width = 240;
-    canvas.height = 76;
-    const ctx = canvas.getContext('2d')!;
-
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
-    ctx.strokeStyle = colorCss;
-    ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.roundRect(6, 8, canvas.width - 12, canvas.height - 16, 14);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#f8fafc';
-    ctx.font = '800 28px "Inter", -apple-system, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-    const texture = new THREE.CanvasTexture(canvas);
+    const texture = this.getOrCreateFretNumberTexture(text, mode);
     const mat = new THREE.SpriteMaterial({
       map: texture,
       transparent: true,
       depthTest: false,
     });
     const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.95, 0.3, 1);
+    sprite.scale.set(0.38, 0.25, 1);
     return sprite;
   }
 
-  private createMeasureLabelSprite(text: string): THREE.Sprite {
-    const canvas = document.createElement('canvas');
-    canvas.width = 140;
-    canvas.height = 68;
-    const ctx = canvas.getContext('2d')!;
+  private desaturateNoteAsMissed(obj: NoteRenderObject): void {
+    if (obj.isDesaturatedMissed) return;
+    obj.isDesaturatedMissed = true;
 
-    ctx.fillStyle = 'rgba(30, 41, 59, 0.85)';
-    ctx.beginPath();
-    ctx.roundRect(6, 8, canvas.width - 12, canvas.height - 16, 10);
-    ctx.fill();
+    obj.hwGemMat.color.setHex(0x334155);
+    obj.hwGemMat.emissive.setHex(0x0f172a);
+    obj.hwGemMat.emissiveIntensity = 0.08;
+    obj.hwGemMat.transparent = true;
+    obj.hwGemMat.opacity = 0.35;
+    obj.hwGemMat.needsUpdate = true;
 
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = '700 28px "Inter", monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    obj.tailMat.color.setHex(0x334155);
+    obj.tailMat.opacity = 0.18;
 
-    const texture = new THREE.CanvasTexture(canvas);
-    const mat = new THREE.SpriteMaterial({ map: texture, transparent: true });
-    const sprite = new THREE.Sprite(mat);
-    sprite.scale.set(0.7, 0.34, 1);
-    return sprite;
+    obj.stemMat.color.setHex(0x334155);
+    obj.stemMat.opacity = 0.18;
+
+    obj.hwSpriteMat.opacity = 0.35;
+    obj.fretboardNoteGroup.visible = false;
+  }
+
+  private restoreNoteMaterials(obj: NoteRenderObject): void {
+    if (!obj.isDesaturatedMissed) return;
+    obj.isDesaturatedMissed = false;
+
+    obj.hwGemMat.color.setHex(obj.originalColorHex);
+    obj.hwGemMat.emissive.setHex(obj.originalColorHex);
+    obj.hwGemMat.emissiveIntensity = 0.6;
+    obj.hwGemMat.transparent = false;
+    obj.hwGemMat.opacity = 1.0;
+    obj.hwGemMat.needsUpdate = true;
+
+    obj.tailMat.color.setHex(obj.originalColorHex);
+    obj.tailMat.opacity = 0.38;
+
+    obj.stemMat.color.setHex(obj.originalColorHex);
+    obj.stemMat.opacity = 0.55;
+
+    obj.hwSpriteMat.opacity = 1.0;
   }
 
   /**
-   * Updates all measure bars, 3D note capsules, chord wireframe boxes, and the active 4-fret
-   * hand position bracket for `currentTimeMs`.
+   * Flashes the target fretboard string rail (1–6) with an emissive pulse.
    */
-  public update(currentTimeMs: number): void {
-    this.currentTimeMs = currentTimeMs;
+  public flashStringRail(stringNumber: number): void {
+    const clamped = Math.max(1, Math.min(6, Math.round(stringNumber)));
+    this.stringRailPulses.set(clamped, 1.0);
+    const mat = this.stringRailMaterials.get(clamped);
+    if (mat) {
+      mat.emissiveIntensity = 2.6;
+    }
+    const mesh = this.stringRailMeshes.get(clamped);
+    if (mesh) {
+      mesh.scale.set(1.45, 1, 1.45);
+    }
+  }
+
+  /**
+   * Triggers a hit check on `stringIndex` (1–6) and optional `fret` at `currentAudioTimeMs`.
+   * If a note is hit within the timing window (<= 120ms):
+   * - Immediately removes the note capsule from the highway
+   * - Spawns a 3D particle burst at (X, Y, Z=0) in the string's color
+   * - Spawns a 3D floating rating popup ("PERFECT", "GREAT", "GOOD")
+   * - Flashes the target string rail with an emissive pulse
+   */
+  public triggerHit(
+    stringIndex: number,
+    fret?: number | null,
+    currentAudioTimeMs: number = this.currentAudioTimeMs,
+  ): HitEvaluationResult {
+    const targetString =
+      stringIndex >= 1 && stringIndex <= 6
+        ? Math.round(stringIndex)
+        : Math.max(1, Math.min(6, Math.round(stringIndex) + 1));
+
+    this.flashStringRail(targetString);
+
+    const result = this.scoring.checkHit(
+      targetString,
+      fret,
+      currentAudioTimeMs,
+    );
+    if (result.hit && result.noteIndex >= 0 && result.rating) {
+      this.triggerNoteDestruction(result);
+    }
+    return result;
+  }
+
+  /**
+   * Evaluates a live guitar pitch detector MIDI note against any unjudged note within the hit window.
+   */
+  public triggerPitchHit(
+    detectedMidiNote: number,
+    currentAudioTimeMs: number = this.currentAudioTimeMs,
+  ): HitEvaluationResult {
+    const result = this.scoring.checkPitchHit(
+      detectedMidiNote,
+      currentAudioTimeMs,
+    );
+    if (result.hit && result.noteIndex >= 0 && result.rating) {
+      this.flashStringRail(result.note!.string);
+      this.triggerNoteDestruction(result);
+    }
+    return result;
+  }
+
+  private triggerNoteDestruction(result: HitEvaluationResult): void {
+    const obj = this.noteObjects[result.noteIndex];
+    if (!obj || !result.rating) return;
+
+    // Immediately remove note capsule from highway and fretboard
+    obj.highwayGroup.visible = false;
+    obj.fretboardNoteGroup.visible = false;
+
+    // Spawn 20–30 glowing sparks at contact coordinates (X, Y, Z = 0)
+    this.particles.spawnBurst(
+      obj.baseX,
+      obj.fretboardY,
+      0,
+      obj.originalColorHex,
+      26,
+    );
+
+    // Spawn floating 3D rating sprite ("PERFECT", "GREAT", "GOOD")
+    this.particles.spawnFloatingRating(
+      obj.baseX,
+      obj.fretboardY,
+      0,
+      result.rating,
+    );
+
+    this.callbacks.onNoteHit?.(result);
+  }
+
+  public resetScoring(): void {
+    this.scoring.reset();
+    this.particles.clear();
+    for (const obj of this.noteObjects) {
+      this.restoreNoteMaterials(obj);
+    }
+  }
+
+  public syncScoringToSeek(seekTimeMs: number): void {
+    this.scoring.syncToSeekTime(seekTimeMs);
+    this.particles.clear();
+    for (const obj of this.noteObjects) {
+      this.restoreNoteMaterials(obj);
+    }
+  }
+
+  public getScoreState(): ScoreState {
+    return this.scoring.getState();
+  }
+
+  /**
+   * Updates all measure bars, 3D highway notes, target fretboard notes, chord wireframe boxes,
+   * particle bursts, string rail pulses, and the active 4-fret hand position bracket for `currentAudioTimeMs`.
+   */
+  public update(currentAudioTimeMs: number): void {
+    this.currentAudioTimeMs = currentAudioTimeMs;
+
+    // 0. Sync highway scroll speed to the active measure's BPM
+    if (this.chartMeasures.length > 0) {
+      const lookupMs = Math.max(0, currentAudioTimeMs);
+      let activeMeasure = this.chartMeasures[0];
+      for (let i = this.chartMeasures.length - 1; i >= 0; i--) {
+        if (lookupMs >= this.chartMeasures[i].startMs) {
+          activeMeasure = this.chartMeasures[i];
+          break;
+        }
+      }
+      const targetBpm = activeMeasure.bpm > 0 ? activeMeasure.bpm : 120;
+      this.currentBpm += (targetBpm - this.currentBpm) * 0.15;
+      this.speed = this.baseSpeedAt120Bpm * (this.currentBpm / 120);
+    }
+
+    // 0b. Decay target string rail emissive pulses
+    for (const [sNum, pulse] of this.stringRailPulses.entries()) {
+      if (pulse <= 0.001) continue;
+      const nextPulse = pulse * 0.84;
+      this.stringRailPulses.set(sNum, nextPulse < 0.01 ? 0 : nextPulse);
+      const mat = this.stringRailMaterials.get(sNum);
+      if (mat) {
+        mat.emissiveIntensity = 0.55 + nextPulse * 2.05;
+      }
+      const mesh = this.stringRailMeshes.get(sNum);
+      if (mesh) {
+        const sc = 1 + nextPulse * 0.45;
+        mesh.scale.set(sc, 1, sc);
+      }
+    }
 
     // 1. Update Active 4-Fret Hand Position Bracket
     this.activeHandFrets = computeActiveHandPosition(
       this.chartNotes,
-      currentTimeMs,
+      currentAudioTimeMs,
       this.config.maxFret,
     );
     this.handBracketTargetX = this.computeBracketCenterX(
       this.activeHandFrets.startFret,
     );
     this.handBracketCurrentX +=
-      (this.handBracketTargetX - this.handBracketCurrentX) * 0.18;
+      (this.handBracketTargetX - this.handBracketCurrentX) * 0.2;
     this.handBracketGroup.position.x = this.handBracketCurrentX;
 
-    // 2. Update Measure & Beat Bars along the 30° highway slope
+    const handKey = `${this.activeHandFrets.startFret}-${this.activeHandFrets.endFret}`;
+    if (handKey !== this.lastHighlightedHandKey) {
+      this.lastHighlightedHandKey = handKey;
+      for (const [f, sprite] of this.fretLabelSprites.entries()) {
+        const inBracket =
+          f >= this.activeHandFrets.startFret &&
+          f <= this.activeHandFrets.endFret;
+        const isStandard = STANDARD_FRET_LABELS.has(f);
+        sprite.visible = inBracket || isStandard;
+        const mat = sprite.material as THREE.SpriteMaterial;
+        mat.map = this.getOrCreateFretNumberTexture(
+          String(f),
+          inBracket ? 'active' : 'standard',
+        );
+      }
+    }
+
+    // 2. Update Measure & Beat Bars along the sloped -Z highway
     for (const item of this.beatLineObjects) {
-      const dist = projectTimeToZ(
-        item.timeMs,
-        currentTimeMs,
-        this.speedMultiplier,
-      );
-      const visible = isZVisible(dist, this.config);
+      const z = projectTimeToZ(item.timeMs, currentAudioTimeMs, this.speed);
+      const visible = z <= 0 && z >= -this.config.highwayLengthDist;
       item.group.visible = visible;
       if (visible) {
-        const yz = highwayDistToWorldYZ(dist, this.config.highwayElevationDeg);
-        item.group.position.y = yz.yOffset;
-        item.group.position.z = yz.z;
+        item.group.position.y = this.getHighwayFloorY(z);
+        item.group.position.z = z;
       }
     }
 
-    // 3. Update Chord Cluster 3D Wireframe Bounding Boxes
+    // 3. Update Chord Cluster 3D Wireframe Bounding Boxes along the sloped -Z highway
     for (const cObj of this.chordObjects) {
-      const dist = projectTimeToZ(
+      const z = projectTimeToZ(
         cObj.cluster.timeMs,
-        currentTimeMs,
-        this.speedMultiplier,
+        currentAudioTimeMs,
+        this.speed,
       );
-      const visible = isZVisible(dist, this.config);
+      const visible = z <= 0 && z >= -this.config.highwayLengthDist;
       cObj.group.visible = visible;
       if (visible) {
-        const yz = highwayDistToWorldYZ(dist, this.config.highwayElevationDeg);
-        cObj.group.position.set(cObj.baseX, cObj.baseY + yz.yOffset, yz.z);
-        const active = isNoteActiveAtHitBar(
-          cObj.cluster.timeMs,
-          cObj.cluster.durationMs,
-          currentTimeMs,
-          this.config.hitWindowMs,
-        );
-        cObj.boxMat.opacity = active ? 0.22 : 0.08;
+        const floorY = this.getHighwayFloorY(z);
+        cObj.group.position.set(cObj.baseX, floorY + 0.34, z);
       }
     }
 
-    // 4. Update 3D Note Capsules along their String Rail and Fret Column
-    const activeStrings = new Set<number>();
+    // 4. Update Highway Note Capsules, Target Fretboard Capsules, and Hit/Miss Resolution
     const activeNotes: ChartNote[] = [];
+    const goodWindowMs = this.scoring.getTimingWindows().goodMs;
 
     for (const obj of this.noteObjects) {
-      const dist = projectTimeToZ(
-        obj.note.timeMs,
-        currentTimeMs,
-        this.speedMultiplier,
-      );
-      const tailLen = Math.max(
-        0.08,
-        durationToWorldZ(obj.note.durationMs, this.speedMultiplier) * 0.78,
-      );
-      const visible =
-        dist + tailLen >= this.config.despawnDist &&
-        dist <= this.config.highwayLengthDist;
+      let noteState = this.scoring.getNoteState(obj.index);
 
-      obj.group.visible = visible;
-      if (!visible) {
+      // HIT notes are immediately removed from the highway and fretboard
+      if (noteState === 'HIT') {
+        obj.highwayGroup.visible = false;
+        obj.fretboardNoteGroup.visible = false;
         continue;
       }
 
-      const yz = highwayDistToWorldYZ(dist, this.config.highwayElevationDeg);
-      obj.group.position.set(obj.baseX, obj.baseY + yz.yOffset, yz.z);
-      obj.tailMesh.scale.set(1, 1, tailLen);
+      const timeDeltaMs = obj.note.timeMs - currentAudioTimeMs;
+      // signedRelZ = (note.timeMs - currentAudioTimeMs) * (speed / 1000)
+      // > 0 when approaching target bar, 0 at target bar, < 0 after passing target bar
+      const signedRelZ = timeDeltaMs * (this.speed / 1000);
+      const worldZ = projectTimeToZ(
+        obj.note.timeMs,
+        currentAudioTimeMs,
+        this.speed,
+      );
+      const tailLen = Math.max(
+        0.06,
+        durationToWorldZ(obj.note.durationMs, this.speed) * 0.78,
+      );
 
+      // MISS resolution: if note passes Z < -0.8 beyond the target bar AND is past the 120ms GOOD window
+      if (
+        noteState === 'PENDING' &&
+        signedRelZ < -0.8 &&
+        -timeDeltaMs > goodWindowMs
+      ) {
+        const missEvent = this.scoring.markNoteMissed(obj.index);
+        noteState = 'MISSED';
+        this.desaturateNoteAsMissed(obj);
+        if (missEvent) {
+          this.callbacks.onNoteMiss?.(missEvent);
+        }
+      }
+
+      if (noteState === 'MISSED') {
+        // Missed notes do NOT explode or delete instantly:
+        // Desaturated to dull semi-transparent gray/black (opacity: 0.35), they continue
+        // traveling straight through the strings into the foreground before despawning at Z < -3.0.
+        this.desaturateNoteAsMissed(obj);
+        obj.fretboardNoteGroup.visible = false;
+
+        if (signedRelZ >= -3.0) {
+          obj.highwayGroup.visible = true;
+          const fallThroughY =
+            worldZ <= 0
+              ? this.getHighwayFloorY(worldZ) + obj.highwayLaneOffset
+              : obj.fretboardY;
+          obj.highwayGroup.position.set(obj.baseX, fallThroughY, worldZ);
+          obj.tailMesh.scale.set(1, 1, tailLen);
+        } else {
+          obj.highwayGroup.visible = false;
+        }
+        continue;
+      }
+
+      // PENDING note: visible on the highway while approaching Z = 0, and continues smoothly
+      // through the strings from Z = 0 to Z = -0.8 if unhit before transitioning to MISSED.
+      const hwVisible =
+        signedRelZ <= this.config.highwayLengthDist && signedRelZ >= -0.8;
+      obj.highwayGroup.visible = hwVisible;
+      if (hwVisible) {
+        const noteY =
+          worldZ <= 0
+            ? this.getHighwayFloorY(worldZ) + obj.highwayLaneOffset
+            : obj.fretboardY;
+        obj.highwayGroup.position.set(obj.baseX, noteY, worldZ);
+        obj.tailMesh.scale.set(1, 1, tailLen);
+      }
+
+      // Target Fretboard capsule appears on its exact horizontal string at Z = 0
+      // when the note is arriving within 900ms and inside the hit window.
       const isHitActive = isNoteActiveAtHitBar(
         obj.note.timeMs,
         obj.note.durationMs,
-        currentTimeMs,
-        this.config.hitWindowMs,
+        currentAudioTimeMs,
+        goodWindowMs,
       );
+      const isUpcomingOnFretboard =
+        timeDeltaMs >= -goodWindowMs && timeDeltaMs <= 900;
 
-      if (isHitActive) {
-        activeStrings.add(obj.note.string);
-        activeNotes.push(obj.note);
-        obj.gemMaterial.emissiveIntensity = 1.85;
-        obj.gemMesh.scale.setScalar(1.24);
-      } else {
-        obj.gemMaterial.emissiveIntensity = 0.55;
-        obj.gemMesh.scale.setScalar(1.0);
+      obj.fretboardNoteGroup.visible = isUpcomingOnFretboard;
+      if (isUpcomingOnFretboard) {
+        if (isHitActive) {
+          activeNotes.push(obj.note);
+          obj.fbGemMaterial.emissiveIntensity = 1.85;
+          obj.fbGemMesh.scale.set(1.22, 1.05, 0.85);
+        } else {
+          obj.fbGemMaterial.emissiveIntensity = 0.7;
+          obj.fbGemMesh.scale.set(1, 0.85, 0.65);
+        }
       }
     }
 
     this.activeNotesAtHitBar = activeNotes;
 
-    // 5. Highlight active horizontal strings on the pinned fretboard & highway
-    for (const railSpec of STRING_RAILS) {
-      const isStrActive = activeStrings.has(railSpec.stringNumber);
-      const fbMat = this.fretboardStringMats.get(railSpec.stringNumber);
-      const hwMat = this.highwayStringMats.get(railSpec.stringNumber);
-      if (fbMat) {
-        fbMat.emissiveIntensity = isStrActive ? 1.8 : 0.55;
-      }
-      if (hwMat) {
-        hwMat.opacity = isStrActive ? 0.16 : 0.045;
-      }
-    }
+    // 5. Update 3D burst particles and floating rating sprites
+    this.particles.update(currentAudioTimeMs);
 
     this.renderer.render(this.scene, this.camera);
   }
 
-  public setSpeedMultiplier(speedMultiplier: number): void {
-    this.speedMultiplier = Math.max(0.004, Math.min(0.05, speedMultiplier));
-    this.update(this.currentTimeMs);
+  public setSpeedMultiplier(speedOrMultiplier: number): void {
+    this.baseSpeedAt120Bpm = Math.max(
+      4,
+      Math.min(50, normalizeSpeedUnitsPerSec(speedOrMultiplier)),
+    );
+    this.speed = this.baseSpeedAt120Bpm * (this.currentBpm / 120);
+    this.update(this.currentAudioTimeMs);
   }
 
   public getSpeedMultiplier(): number {
-    return this.speedMultiplier;
+    return this.speed / 1000;
+  }
+
+  public getSpeed(): number {
+    return this.speed;
+  }
+
+  public getCurrentBpm(): number {
+    return this.currentBpm;
   }
 
   public getActiveNotesAtHitBar(): ChartNote[] {

@@ -21,12 +21,15 @@ export interface TabSearchResult {
 }
 
 async function readError(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('text/html')) {
+    return 'Backend server is not running on port 8000. Start it with `npm run backend` (or uvicorn).';
+  }
   try {
     const body = (await response.json()) as { detail?: unknown };
     if (typeof body.detail === 'string') return body.detail;
   } catch {
-    // Non-JSON error: the Vite proxy answers an empty 500 when nothing is on port 8000,
-    // and FastAPI answers plain-text 500 for an unhandled crash
+    // Non-JSON error
   }
   return response.status >= 500
     ? 'Backend not reachable. Start it with `npm run backend` (or uvicorn on port 8000) and check its terminal for errors.'
@@ -35,7 +38,10 @@ async function readError(response: Response): Promise<string> {
 
 export async function searchTabs(query: string): Promise<TabSearchResult[]> {
   const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
-  if (!response.ok) throw new Error(await readError(response));
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok || contentType.includes('text/html')) {
+    throw new Error(await readError(response));
+  }
   const body = (await response.json()) as { results: TabSearchResult[] };
   return body.results;
 }
@@ -52,13 +58,19 @@ export async function importTab(result: TabSearchResult): Promise<SongEntry> {
       artist: result.artist,
     }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok || contentType.includes('text/html')) {
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as SongEntry;
 }
 
 export async function fetchBackingTrackStatus(songId: string): Promise<BackingTrackStatus> {
   const response = await fetch(`/api/songs/${encodeURIComponent(songId)}/audio`);
-  if (!response.ok) throw new Error(await readError(response));
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok || contentType.includes('text/html')) {
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as BackingTrackStatus;
 }
 
@@ -72,6 +84,9 @@ export async function rebuildBackingTrack(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ youtube: youtube || null }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  const contentType = response.headers.get('content-type') || '';
+  if (!response.ok || contentType.includes('text/html')) {
+    throw new Error(await readError(response));
+  }
   return (await response.json()) as BackingTrackStatus;
 }

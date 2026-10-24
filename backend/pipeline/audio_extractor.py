@@ -63,24 +63,30 @@ def download_youtube_audio(
         "no_warnings": True,
     }
 
-    if ffmpeg_bin:
-        # Pass the binary itself: imageio-ffmpeg's binary isn't named plain `ffmpeg`
-        ydl_opts["ffmpeg_location"] = ffmpeg_bin
-        ydl_opts["postprocessors"] = [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": preferred_codec,
-                "preferredquality": "192",
-            }
-        ]
-
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(target, download=True)
         if "entries" in info and info["entries"]:
             info = info["entries"][0]
         downloaded_path = Path(ydl.prepare_filename(info))
 
+    if not downloaded_path.exists():
+        matches = sorted(
+            p for p in dest_dir.glob(f"{track_id}.*") if not p.name.endswith(".part")
+        )
+        if matches:
+            downloaded_path = matches[0]
+
     expected_path = output_stem.with_suffix(f".{preferred_codec}")
+    if downloaded_path.exists() and ffmpeg_bin and downloaded_path.resolve() != expected_path.resolve():
+        cmd: list[str] = [ffmpeg_bin, "-y", "-i", str(downloaded_path)]
+        if preferred_codec.lower() == "mp3":
+            cmd.extend(["-vn", "-codec:a", "libmp3lame", "-qscale:a", "2", str(expected_path)])
+        else:
+            cmd.extend(["-vn", str(expected_path)])
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        downloaded_path.unlink(missing_ok=True)
+        return expected_path
+
     if expected_path.exists():
         return expected_path
     if downloaded_path.exists():

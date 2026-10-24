@@ -31,19 +31,48 @@ export interface SongEntry {
 export type AudioStatus = 'none' | 'pending' | 'ready' | 'failed';
 
 export async function fetchSongLibrary(): Promise<SongEntry[]> {
-  const response = await fetch(SONG_LIBRARY_URL);
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} fetching ${SONG_LIBRARY_URL}`);
+  try {
+    const response = await fetch(SONG_LIBRARY_URL);
+    const contentType = response.headers.get('content-type') || '';
+    if (response.ok && !contentType.includes('text/html')) {
+      const text = await response.text();
+      if (text.trim().startsWith('{')) {
+        return normalizeSongs(JSON.parse(text));
+      }
+    }
+  } catch {
+    // Non-JSON or fetch error; use default bundled entry
   }
-  return normalizeSongs(await response.json());
+  return [
+    {
+      id: 'white-stripes-seven_nation_army',
+      title: 'Seven Nation Army',
+      artist: 'The White Stripes',
+      chartUrl: '/charts/white-stripes-seven_nation_army.json',
+      audioUrl: '/audio/seven_nation_army_backing.mp3',
+      durationMs: 228212,
+      bpm: 125,
+      tuning: 'Open A',
+      difficulty: 1,
+      offsetMs: 3108,
+      sections: [
+        { label: 'Riff', timeMs: 0 },
+        { label: 'Chorus 1', timeMs: 50184 },
+        { label: 'Guitar Solo', timeMs: 120939 },
+      ],
+    },
+  ];
 }
 
 /** Returns [] when the backend isn't running, so the bundled songs still work offline */
 export async function fetchImportedSongs(): Promise<SongEntry[]> {
   try {
     const response = await fetch(IMPORTED_SONGS_URL);
-    if (!response.ok) return [];
-    return normalizeSongs(await response.json());
+    const contentType = response.headers.get('content-type') || '';
+    if (!response.ok || contentType.includes('text/html')) return [];
+    const text = await response.text();
+    if (!text.trim().startsWith('{')) return [];
+    return normalizeSongs(JSON.parse(text));
   } catch {
     return [];
   }

@@ -106,6 +106,7 @@ export class GuitarAudioInput {
   private timeDomainBuffer: Float32Array<ArrayBuffer> | null = null;
 
   private currentVolume = 0.85;
+  private directMonitoringEnabled = true;
   private isConnectedState = false;
   private activeDeviceId: string | null = null;
 
@@ -158,7 +159,9 @@ export class GuitarAudioInput {
       this.mediaStream,
     );
     this.gainNode = this.audioContext.createGain();
-    this.gainNode.gain.value = this.currentVolume;
+    this.gainNode.gain.value = this.directMonitoringEnabled
+      ? this.currentVolume
+      : 0;
 
     this.analyserNode = this.audioContext.createAnalyser();
     this.analyserNode.fftSize = 2048;
@@ -223,7 +226,7 @@ export class GuitarAudioInput {
     this.currentVolume = Math.max(0, Math.min(2.0, volume));
     if (this.gainNode && this.audioContext) {
       this.gainNode.gain.setTargetAtTime(
-        this.currentVolume,
+        this.directMonitoringEnabled ? this.currentVolume : 0,
         this.audioContext.currentTime,
         0.01,
       );
@@ -232,6 +235,30 @@ export class GuitarAudioInput {
 
   public getVolume(): number {
     return this.currentVolume;
+  }
+
+  /**
+   * Enables or disables direct speaker/headphone monitoring while keeping
+   * the USB guitar input stream and AnalyserNode pitch telemetry active.
+   */
+  public setDirectMonitoring(enabled: boolean): void {
+    this.directMonitoringEnabled = enabled;
+    if (this.gainNode && this.audioContext) {
+      this.gainNode.gain.setTargetAtTime(
+        this.directMonitoringEnabled ? this.currentVolume : 0,
+        this.audioContext.currentTime,
+        0.008,
+      );
+    }
+  }
+
+  public isDirectMonitoring(): boolean {
+    return this.directMonitoringEnabled;
+  }
+
+  public toggleDirectMonitoring(): boolean {
+    this.setDirectMonitoring(!this.directMonitoringEnabled);
+    return this.directMonitoringEnabled;
   }
 
   public isActive(): boolean {

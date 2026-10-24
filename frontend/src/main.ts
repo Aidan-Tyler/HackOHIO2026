@@ -1,5 +1,11 @@
 import { GuitarAudioInput } from './audio/guitar_input';
+import {
+  AudioClock,
+  SYNTH_LEAD_IN_MS,
+  calibrateChartToAudio,
+} from './engine/clock';
 import { HighwayEngine, STRING_RAILS } from './engine/highway';
+import defaultSevenNationArmyRaw from '../public/charts/white-stripes-seven_nation_army.json';
 import {
   normalizeChart,
   type ChartData,
@@ -12,6 +18,24 @@ import {
   fetchSongLibrary,
   type SongEntry,
 } from './menu/song_library';
+
+const DEFAULT_SEVEN_NATION_ARMY: SongEntry = {
+  id: 'white-stripes-seven_nation_army',
+  title: 'Seven Nation Army',
+  artist: 'The White Stripes',
+  chartUrl: '/charts/white-stripes-seven_nation_army.json',
+  audioUrl: '/audio/seven_nation_army_backing.mp3',
+  durationMs: 228212,
+  bpm: 125,
+  tuning: 'Open A',
+  difficulty: 1,
+  offsetMs: 3108,
+  sections: [
+    { label: 'Riff', timeMs: 0 },
+    { label: 'Chorus 1', timeMs: 50184 },
+    { label: 'Guitar Solo', timeMs: 120939 },
+  ],
+};
 
 function formatTimeMs(ms: number): string {
   const clamped = Math.max(0, ms);
@@ -43,8 +67,38 @@ async function bootstrap(): Promise<void> {
   const handPosEl = document.getElementById('hud-hand-pos')!;
   const activeNotesEl = document.getElementById('hud-active-notes')!;
   const upcomingRiffEl = document.getElementById('hud-upcoming-riff')!;
+  const legendContainer = document.getElementById('string-legend')!;
 
-  // Backing Track & Highway Controls
+  // Retro Arcade Scoring & Hit/Miss Feedback HUD Elements
+  const missVignetteEl = document.getElementById('miss-vignette')!;
+  const arcadeScoreEl = document.getElementById('arcade-score')!;
+  const arcadeMultiplierEl = document.getElementById('arcade-multiplier')!;
+  const arcadeRatingEl = document.getElementById('arcade-rating')!;
+  const arcadeStreakEl = document.getElementById('arcade-streak')!;
+  const arcadeAccuracyEl = document.getElementById('arcade-accuracy')!;
+
+  // Modals: Pre-Song Guitar Setup Screen & Pause Menu
+  const guitarSetupScreen = document.getElementById('guitar-setup-screen')!;
+  const setupSongSubtitle = document.getElementById('setup-song-subtitle')!;
+  const setupBackBtn = document.getElementById(
+    'setup-back-btn',
+  ) as HTMLButtonElement;
+  const startSongBtn = document.getElementById(
+    'start-song-btn',
+  ) as HTMLButtonElement;
+  const tunerStringsRow = document.getElementById('tuner-strings-row')!;
+
+  const openPauseBtn = document.getElementById(
+    'open-pause-btn',
+  ) as HTMLButtonElement;
+  const pauseMenuEl = document.getElementById('pause-menu')!;
+  const pauseSongSubtitle = document.getElementById('pause-song-subtitle')!;
+  const resumeBtn = document.getElementById('resume-btn') as HTMLButtonElement;
+  const pauseGuitarSetupBtn = document.getElementById(
+    'pause-guitar-setup-btn',
+  ) as HTMLButtonElement;
+
+  // Pause Menu Controls
   const playPauseBtn = document.getElementById(
     'play-pause-btn',
   ) as HTMLButtonElement;
@@ -73,22 +127,24 @@ async function bootstrap(): Promise<void> {
     'speed-slider',
   ) as HTMLInputElement;
   const speedValueEl = document.getElementById('speed-value')!;
-  const legendContainer = document.getElementById('string-legend')!;
 
-  // USB Guitar Input Passthrough Controls
+  // USB Guitar Input Passthrough Controls (inside Pre-Song Guitar Setup Screen)
   const inputDeviceSelect = document.getElementById(
     'audio-input-select',
   ) as HTMLSelectElement;
   const guitarConnectBtn = document.getElementById(
     'guitar-connect-btn',
   ) as HTMLButtonElement;
+  const directMonitorBtn = document.getElementById(
+    'direct-monitor-btn',
+  ) as HTMLButtonElement | null;
   const guitarVolumeSlider = document.getElementById(
     'guitar-volume-slider',
   ) as HTMLInputElement;
   const guitarPitchBadge = document.getElementById('guitar-pitch-badge')!;
   const guitarLevelFill = document.getElementById('guitar-level-fill')!;
 
-  // Render string rail legend badges (String 6 / Low E down to String 1 / High E)
+  // Render string rail legend badges (String 6 Low E Red at top down to String 1 High E Purple)
   legendContainer.innerHTML = STRING_RAILS.map(
     (rail) => `
       <div class="legend-chip" style="--rail-color: ${rail.colorCss}">
@@ -98,28 +154,136 @@ async function bootstrap(): Promise<void> {
     `,
   ).join('');
 
-  const engine = new HighwayEngine(viewportEl);
-  const guitarInput = new GuitarAudioInput();
+  // Render 6-string reference pills on the Guitar Input Check screen
+  tunerStringsRow.innerHTML = STRING_RAILS.map(
+    (rail) => `
+      <div class="tuner-string-pill" data-string-note="${rail.noteName}" style="--rail-color: ${rail.colorCss}">
+        <div>S${rail.stringNumber}</div>
+        <div style="color:${rail.colorCss}">${rail.noteName}</div>
+      </div>
+    `,
+  ).join('');
 
-  // HTMLAudioElement for Backing Track Sync (src is set per song in loadSong)
-  const backingAudio = new Audio();
-  backingAudio.preload = 'auto';
-  let audioReady = false;
-  backingAudio.addEventListener('canplay', () => {
-    audioReady = true;
-  });
+  let ratingFadeTimer: number | null = null;
+  let vignetteFadeTimer: number | null = null;
+
+  function showRatingBanner(
+    rating: 'PERFECT' | 'GREAT' | 'GOOD' | 'MISS',
+  ): void {
+    arcadeRatingEl.textContent = rating;
+    arcadeRatingEl.setAttribute('data-rating', rating);
+    arcadeRatingEl.classList.remove('pop');
+    // Force reflow for re-triggering pop animation
+    void arcadeRatingEl.offsetWidth;
+    arcadeRatingEl.classList.add('pop');
+
+    if (ratingFadeTimer !== null) {
+      window.clearTimeout(ratingFadeTimer);
+    }
+    ratingFadeTimer = window.setTimeout(() => {
+      arcadeRatingEl.classList.remove('pop');
+    }, 650);
+  }
+
+  function flashMissVignette(): void {
+    missVignetteEl.classList.add('flash');
+    if (vignetteFadeTimer !== null) {
+      window.clearTimeout(vignetteFadeTimer);
+    }
+    vignetteFadeTimer = window.setTimeout(() => {
+      missVignetteEl.classList.remove('flash');
+    }, 180);
+  }
+
+  function renderArcadeScoreHud(): void {
+    const state = engine.getScoreState();
+    arcadeScoreEl.textContent = String(state.score).padStart(6, '0');
+    arcadeMultiplierEl.textContent = `${state.multiplier}X`;
+    arcadeMultiplierEl.setAttribute('data-mult', String(state.multiplier));
+    arcadeStreakEl.textContent =
+      state.maxStreak > 0
+        ? `STREAK: ${state.streak} · BEST: ${state.maxStreak}`
+        : `STREAK: ${state.streak}`;
+    arcadeAccuracyEl.textContent = `${state.accuracy.toFixed(1)}%`;
+    arcadeAccuracyEl.style.color =
+      state.accuracy >= 90
+        ? '#4ade80'
+        : state.accuracy >= 75
+          ? '#38bdf8'
+          : state.accuracy >= 50
+            ? '#facc15'
+            : '#f87171';
+  }
+
+  const engine = new HighwayEngine(
+    viewportEl,
+    {},
+    {
+      onNoteHit: (result) => {
+        if (result.rating) {
+          showRatingBanner(result.rating);
+        }
+        renderArcadeScoreHud();
+      },
+      onNoteMiss: () => {
+        showRatingBanner('MISS');
+        flashMissVignette();
+        renderArcadeScoreHud();
+      },
+    },
+  );
+  const guitarInput = new GuitarAudioInput();
+  guitarInput.setDirectMonitoring(true);
 
   let chart: ChartData | null = null;
   let currentSong: SongEntry | null = null;
-  // Player's manual sync correction on top of the song's auto-detected offset.
-  // Positive = audio plays later relative to the notes.
-  let audioDelayMs = 0;
-  // True while backingAudio.play() is resolving, so the animate loop doesn't re-trigger it
-  let audioStarting = false;
-  let isPlaying = false;
-  let currentTimeMs = 0;
   let totalDurationMs = 228500;
-  let lastFrameTimestamp: number | null = null;
+  let menuRef: MainMenu | null = null;
+  let baseAutoOffsetMs = -3108;
+
+  function isSetupOpen(): boolean {
+    return !guitarSetupScreen.hidden;
+  }
+
+  function isPauseMenuOpen(): boolean {
+    return !pauseMenuEl.hidden;
+  }
+
+  function syncNudgeStorageKey(): string | null {
+    return currentSong ? `audio-nudge-ms:${currentSong.id}` : null;
+  }
+
+  function loadSavedNudgeMs(): number {
+    const key = syncNudgeStorageKey();
+    try {
+      return key ? Number(localStorage.getItem(key)) || 0 : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  // Hardware-synced Master Clock (HTMLAudioElement)
+  const clock = new AudioClock({
+    initialOffsetMs: baseAutoOffsetMs,
+    shouldIgnoreHotkeys: () => Boolean(menuRef?.isOpen()) || isSetupOpen(),
+    onPlayStateChange: (playing) => {
+      playPauseBtn.textContent = playing ? '⏸ Pause' : '▶ Play';
+      playPauseBtn.classList.toggle('active', playing);
+    },
+    onOffsetChange: (globalOffsetMs) => {
+      const userNudgeMs = Math.round(globalOffsetMs - baseAutoOffsetMs);
+      syncValueEl.textContent = `${userNudgeMs > 0 ? '+' : ''}${userNudgeMs} ms (${globalOffsetMs} ms)`;
+      const key = syncNudgeStorageKey();
+      try {
+        if (key) localStorage.setItem(key, String(userNudgeMs));
+      } catch {
+        // Ignore storage errors
+      }
+      const currentAudioTimeMs = clock.getCurrentAudioTimeMs();
+      engine.update(currentAudioTimeMs);
+      updateHud(currentAudioTimeMs);
+    },
+  });
 
   async function refreshAudioDeviceOptions(): Promise<void> {
     const devices = await guitarInput.listInputDevices();
@@ -138,16 +302,17 @@ async function bootstrap(): Promise<void> {
 
   void refreshAudioDeviceOptions();
 
-  function updateHud(timeMs: number): void {
-    timeCurrentEl.textContent = formatTimeMs(timeMs);
-    scrubSlider.value = String(Math.round(timeMs));
+  function updateHud(currentAudioTimeMs: number): void {
+    const clampedMs = Math.max(0, currentAudioTimeMs);
+    timeCurrentEl.textContent = formatTimeMs(clampedMs);
+    scrubSlider.value = String(Math.round(clampedMs));
 
     const handRange = engine.getActiveHandPosition();
     handPosEl.textContent = `Frets ${handRange.startFret}–${handRange.endFret}`;
 
     if (!chart) return;
 
-    const currentMeasure = findCurrentMeasure(chart.measures, timeMs);
+    const currentMeasure = findCurrentMeasure(chart.measures, clampedMs);
     if (currentMeasure) {
       measureEl.textContent = `${currentMeasure.number} / ${chart.measures.length}`;
       bpmEl.textContent = `${Math.round(currentMeasure.bpm)} BPM`;
@@ -167,7 +332,7 @@ async function bootstrap(): Promise<void> {
     }
 
     const upcoming = chart.notes
-      .filter((n) => n.timeMs >= timeMs - 80)
+      .filter((n) => n.timeMs >= currentAudioTimeMs - 80)
       .slice(0, 7);
     if (upcoming.length > 0) {
       upcomingRiffEl.textContent = upcoming.map((n) => `${n.fret}`).join(' - ');
@@ -176,141 +341,177 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  // offset_ms sync: audio_time_ms = chart_time_ms + offset_ms
-  function syncOffsetMs(): number {
-    return (currentSong?.offsetMs ?? 0) - audioDelayMs;
-  }
-
-  function hasBackingTrack(): boolean {
-    return Boolean(currentSong?.audioUrl) && audioReady;
-  }
-
-  /**
-   * Moves the backing track to match `currentTimeMs` and starts it if playing.
-   * When the chart time maps to before the recording starts (negative audio time),
-   * the audio waits at 0 and the animate loop starts it once the lead-in has passed.
-   */
-  function syncAudioToChart(): void {
-    if (!hasBackingTrack()) return;
-    const targetSec = (currentTimeMs + syncOffsetMs()) / 1000;
-    if (targetSec < 0 || targetSec >= backingAudio.duration) {
-      backingAudio.pause();
-      return;
-    }
-    try {
-      backingAudio.currentTime = targetSec;
-    } catch {
-      // Ignore seek errors before metadata is loaded
-    }
-    if (isPlaying && backingAudio.paused && !audioStarting) {
-      audioStarting = true;
-      backingAudio
-        .play()
-        .catch(() => {
-          // Playback blocked or unavailable: the animate loop keeps a simulated clock
-        })
-        .finally(() => {
-          audioStarting = false;
-        });
-    }
+  function resetSongToStart(): void {
+    clock.resetToTrackStart();
+    engine.resetScoring();
+    arcadeRatingEl.classList.remove('pop');
+    renderArcadeScoreHud();
+    const currentAudioTimeMs = clock.getCurrentAudioTimeMs();
+    engine.update(currentAudioTimeMs);
+    updateHud(currentAudioTimeMs);
   }
 
   function seekTo(targetMs: number): void {
-    currentTimeMs = Math.max(0, Math.min(totalDurationMs, targetMs));
-    syncAudioToChart();
-    engine.update(currentTimeMs);
-    updateHud(currentTimeMs);
-  }
-
-  async function setPlaying(nextPlaying: boolean): Promise<void> {
-    isPlaying = nextPlaying;
-    lastFrameTimestamp = null;
-    playPauseBtn.textContent = isPlaying ? '⏸ Pause' : '▶ Play';
-    playPauseBtn.classList.toggle('active', isPlaying);
-
-    if (isPlaying) {
-      syncAudioToChart();
-    } else {
-      backingAudio.pause();
-    }
-  }
-
-  function syncDelayStorageKey(): string | null {
-    return currentSong ? `audio-delay-ms:${currentSong.id}` : null;
-  }
-
-  function setAudioDelay(delayMs: number): void {
-    audioDelayMs = delayMs;
-    syncValueEl.textContent = `${delayMs > 0 ? '+' : ''}${delayMs} ms`;
-    const key = syncDelayStorageKey();
-    try {
-      if (key) localStorage.setItem(key, String(delayMs));
-    } catch {
-      // Storage unavailable (private window etc.); the nudge just won't persist
-    }
-    if (isPlaying) syncAudioToChart();
-  }
-
-  function loadAudioDelay(): number {
-    const key = syncDelayStorageKey();
-    try {
-      return key ? Number(localStorage.getItem(key)) || 0 : 0;
-    } catch {
-      return 0;
-    }
+    const clampedTarget = Math.max(0, Math.min(totalDurationMs, targetMs));
+    clock.seekToMs(clampedTarget);
+    const currentAudioTimeMs = clock.getCurrentAudioTimeMs();
+    engine.syncScoringToSeek(currentAudioTimeMs);
+    renderArcadeScoreHud();
+    engine.update(currentAudioTimeMs);
+    updateHud(currentAudioTimeMs);
   }
 
   function renderSectionButtons(song: SongEntry): void {
     sectionJumpGroup.innerHTML = '';
     for (const section of song.sections) {
-      if (section.timeMs <= 0) continue; // Restart already covers 0:00
+      if (section.timeMs <= 0) continue;
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.textContent = `⚡ ${formatTimeMs(section.timeMs).slice(0, -2)} (${section.label})`;
-      btn.addEventListener('click', () => seekTo(section.timeMs));
+      btn.addEventListener('click', () => {
+        seekTo(section.timeMs);
+      });
       sectionJumpGroup.appendChild(btn);
     }
   }
 
+  // Modal Navigation Helpers
+  function showGuitarSetupScreen(): void {
+    clock.pause();
+    pauseMenuEl.hidden = true;
+    guitarSetupScreen.hidden = false;
+    document.body.classList.add('setup-open');
+    if (currentSong) {
+      setupSongSubtitle.textContent = `Ready to play “${currentSong.title}” by ${currentSong.artist}. Test your guitar signal below or click Start Song.`;
+    }
+    startSongBtn.focus();
+  }
+
+  function hideGuitarSetupScreen(): void {
+    guitarSetupScreen.hidden = true;
+    document.body.classList.remove('setup-open');
+  }
+
+  function openPauseMenu(): void {
+    clock.pause();
+    pauseMenuEl.hidden = false;
+    if (currentSong) {
+      pauseSongSubtitle.textContent = `${currentSong.title} · ${currentSong.artist}`;
+    }
+    updateHud(clock.getCurrentAudioTimeMs());
+    resumeBtn.focus();
+  }
+
+  function closePauseMenu(autoResume = false): void {
+    pauseMenuEl.hidden = true;
+    if (autoResume) {
+      void clock.play();
+    }
+  }
+
   // Fetch a song's chart JSON + backing track and load it onto the highway
-  async function loadSong(song: SongEntry): Promise<void> {
-    await setPlaying(false);
+  async function loadSong(
+    song: SongEntry,
+    showSetupBeforeStart = true,
+  ): Promise<void> {
+    clock.pause();
 
-    const response = await fetch(song.chartUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} fetching ${song.chartUrl}`);
+    let rawJson: Record<string, unknown> | null = null;
+    try {
+      const response = await fetch(song.chartUrl);
+      const contentType = response.headers.get('content-type') || '';
+      if (response.ok && !contentType.includes('text/html')) {
+        const text = await response.text();
+        if (text.trim().startsWith('{')) {
+          rawJson = JSON.parse(text) as Record<string, unknown>;
+        }
+      }
+    } catch {
+      // Fetch failed or network blocked; try bundled fallback
     }
-    const rawJson = (await response.json()) as Record<string, unknown>;
+
+    if (!rawJson) {
+      if (
+        song.id === 'white-stripes-seven_nation_army' ||
+        song.chartUrl.includes('seven_nation_army')
+      ) {
+        rawJson = defaultSevenNationArmyRaw as unknown as Record<
+          string,
+          unknown
+        >;
+      } else {
+        throw new Error(
+          `Chart could not be loaded from "${song.chartUrl}". If this is an imported tab, make sure the Python backend is running (\`npm run backend\`).`,
+        );
+      }
+    }
+
     chart = normalizeChart(rawJson);
-
     currentSong = song;
-    setAudioDelay(loadAudioDelay());
-    audioReady = false;
-    if (song.audioUrl) {
-      backingAudio.src = song.audioUrl;
-    } else {
-      // Imported tabs have no backing track yet; the animate loop falls back to a simulated clock
-      backingAudio.removeAttribute('src');
-    }
-    backingAudio.load();
-
     totalDurationMs = chart.metadata.totalDurationMs || song.durationMs;
+
+    const loadedAudioUrl = await clock.loadTrack(
+      song.audioUrl,
+      chart,
+      totalDurationMs,
+    );
+
+    const firstTabNoteMs = chart.notes[0]?.timeMs ?? 0;
+    if (clock.isUsingSynthFallback()) {
+      baseAutoOffsetMs = -SYNTH_LEAD_IN_MS;
+    } else if (loadedAudioUrl) {
+      const { firstHitMs } = await calibrateChartToAudio(
+        loadedAudioUrl,
+        chart,
+        song.offsetMs,
+      );
+      totalDurationMs = chart.metadata.totalDurationMs || song.durationMs;
+      baseAutoOffsetMs =
+        firstHitMs > 0 ? Math.round(firstTabNoteMs - firstHitMs) : 0;
+    } else if (song.offsetMs && song.offsetMs !== 0) {
+      baseAutoOffsetMs = -song.offsetMs;
+    } else {
+      baseAutoOffsetMs = 0;
+    }
+
+    clock.setGlobalOffsetMs(baseAutoOffsetMs + loadSavedNudgeMs());
+
     scrubSlider.max = String(Math.ceil(totalDurationMs));
     timeTotalEl.textContent = formatTimeMs(totalDurationMs);
     titleEl.textContent = chart.metadata.title;
-    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures${song.audioUrl ? '' : ' · No backing track'}`;
+    const synthLabel = clock.isUsingSynthFallback()
+      ? ' · Web Audio Synth/Metronome'
+      : '';
+    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${chart.measures.length} Measures${synthLabel}`;
     renderSectionButtons(song);
 
     engine.loadChart(chart);
-    seekTo(0);
+    speedValueEl.textContent = `${engine.getSpeed().toFixed(1)} u/s`;
+    resetSongToStart();
+
+    if (showSetupBeforeStart) {
+      showGuitarSetupScreen();
+    }
   }
 
-  const menu = new MainMenu({ onPlay: loadSong });
+  const menu = new MainMenu({
+    onPlay: async (song) => {
+      await loadSong(song, true);
+    },
+  });
+  menuRef = menu;
 
-  function openMenu(): void {
-    void setPlaying(false);
+  function openMainMenu(): void {
+    clock.pause();
+    hideGuitarSetupScreen();
+    pauseMenuEl.hidden = true;
     menu.show();
   }
+
+  // Preload Seven Nation Army chart & audio onto the 3D highway in background
+  void loadSong(DEFAULT_SEVEN_NATION_ARMY, false).catch((err) => {
+    console.error('Failed to preload default chart:', err);
+  });
 
   menu.show();
   try {
@@ -321,32 +522,64 @@ async function bootstrap(): Promise<void> {
     menu.setSongs([...bundled, ...imported]);
   } catch (err) {
     console.error('Failed to load song library:', err);
-    menu.setSongs([]);
-    menu.setStatus(`Error loading song library: ${String(err)}`);
+    menu.setSongs([DEFAULT_SEVEN_NATION_ARMY]);
+    menu.setStatus(`Loaded offline setlist`);
   }
 
-  // Playback Controls Event Listeners
+  // Pre-Song Guitar Setup Screen Actions
+  startSongBtn.addEventListener('click', () => {
+    hideGuitarSetupScreen();
+    void clock.play();
+  });
+
+  setupBackBtn.addEventListener('click', () => {
+    openMainMenu();
+  });
+
+  // Pause Menu Actions
+  openPauseBtn.addEventListener('click', () => {
+    if (isPauseMenuOpen()) {
+      closePauseMenu(false);
+    } else {
+      openPauseMenu();
+    }
+  });
+
+  resumeBtn.addEventListener('click', () => {
+    closePauseMenu(true);
+  });
+
+  pauseGuitarSetupBtn.addEventListener('click', () => {
+    showGuitarSetupScreen();
+  });
+
   playPauseBtn.addEventListener('click', () => {
     if (!chart) return;
-    if (currentTimeMs >= totalDurationMs) {
-      seekTo(0);
+    if (clock.getCurrentAudioTimeMs() >= totalDurationMs) {
+      resetSongToStart();
     }
-    void setPlaying(!isPlaying);
+    void clock.togglePlayPause();
   });
 
   restartBtn.addEventListener('click', () => {
-    seekTo(0);
+    resetSongToStart();
+    closePauseMenu(true);
   });
 
-  menuBtn.addEventListener('click', openMenu);
+  menuBtn.addEventListener('click', openMainMenu);
 
-  const SYNC_STEP_MS = 20;
-  syncEarlierBtn.addEventListener('click', () => setAudioDelay(audioDelayMs - SYNC_STEP_MS));
-  syncLaterBtn.addEventListener('click', () => setAudioDelay(audioDelayMs + SYNC_STEP_MS));
+  // Hotkeys [ and ] and UI buttons nudge globalOffsetMs by ±10ms live
+  const SYNC_STEP_MS = 10;
+  syncEarlierBtn.addEventListener('click', () =>
+    clock.nudgeGlobalOffsetMs(-SYNC_STEP_MS),
+  );
+  syncLaterBtn.addEventListener('click', () =>
+    clock.nudgeGlobalOffsetMs(SYNC_STEP_MS),
+  );
 
   backingMuteBtn.addEventListener('click', () => {
-    backingAudio.muted = !backingAudio.muted;
-    backingMuteBtn.textContent = backingAudio.muted
+    clock.setMuted(!clock.isMuted());
+    backingMuteBtn.textContent = clock.isMuted()
       ? '🔇 Backing: Muted'
       : '🔊 Backing: ON';
   });
@@ -359,11 +592,11 @@ async function bootstrap(): Promise<void> {
   speedSlider.addEventListener('input', () => {
     const mult = Number(speedSlider.value);
     engine.setSpeedMultiplier(mult);
-    speedValueEl.textContent = `${Math.round(mult * 1000)} u/s`;
-    updateHud(currentTimeMs);
+    speedValueEl.textContent = `${Math.round(engine.getSpeed())} u/s`;
+    updateHud(clock.getCurrentAudioTimeMs());
   });
 
-  // Live USB Guitar Input & Speaker Passthrough Controls
+  // Live USB Guitar Input & Low-Latency Speaker Passthrough Controls
   guitarConnectBtn.addEventListener('click', async () => {
     if (guitarInput.isActive()) {
       guitarInput.stopPassthrough();
@@ -386,6 +619,16 @@ async function bootstrap(): Promise<void> {
     }
   });
 
+  if (directMonitorBtn) {
+    directMonitorBtn.addEventListener('click', () => {
+      const enabled = guitarInput.toggleDirectMonitoring();
+      directMonitorBtn.textContent = enabled
+        ? '🔊 Direct Monitor: ON'
+        : '🔇 Direct Monitor: OFF';
+      directMonitorBtn.classList.toggle('active-guitar', enabled);
+    });
+  }
+
   inputDeviceSelect.addEventListener('change', async () => {
     if (guitarInput.isActive()) {
       await guitarInput.startPassthrough(inputDeviceSelect.value);
@@ -399,59 +642,71 @@ async function bootstrap(): Promise<void> {
   window.addEventListener('keydown', (e) => {
     if (menu.isOpen()) return;
 
+    if (isSetupOpen()) {
+      if (e.code === 'Escape') {
+        openMainMenu();
+      } else if (e.code === 'Enter') {
+        e.preventDefault();
+        hideGuitarSetupScreen();
+        void clock.play();
+      }
+      return;
+    }
+
     if (e.code === 'Escape') {
-      openMenu();
-    } else if (e.code === 'Space' && e.target === document.body) {
       e.preventDefault();
-      void setPlaying(!isPlaying);
-    } else if (e.code === 'BracketLeft') {
-      setAudioDelay(audioDelayMs - SYNC_STEP_MS);
-    } else if (e.code === 'BracketRight') {
-      setAudioDelay(audioDelayMs + SYNC_STEP_MS);
+      if (isPauseMenuOpen()) {
+        closePauseMenu(false);
+      } else {
+        openPauseMenu();
+      }
     } else if (e.code === 'ArrowRight') {
-      seekTo(currentTimeMs + 2000);
+      seekTo(clock.getCurrentAudioTimeMs() + 2000);
     } else if (e.code === 'ArrowLeft') {
-      seekTo(currentTimeMs - 2000);
+      seekTo(clock.getCurrentAudioTimeMs() - 2000);
+    } else if (
+      !isPauseMenuOpen() &&
+      (e.code.startsWith('Digit') || e.code.startsWith('Numpad'))
+    ) {
+      const digit = Number(e.code.replace('Digit', '').replace('Numpad', ''));
+      if (digit >= 1 && digit <= 6) {
+        e.preventDefault();
+        const nowMs = clock.getCurrentAudioTimeMs();
+        engine.triggerHit(digit, undefined, nowMs);
+        updateHud(nowMs);
+      }
     }
   });
 
-  // Main requestAnimationFrame loop synced to HTMLAudioElement.currentTime
-  function animate(timestamp: number): void {
-    if (isPlaying) {
-      if (!backingAudio.paused && hasBackingTrack()) {
-        currentTimeMs = backingAudio.currentTime * 1000 - syncOffsetMs();
-      } else {
-        if (lastFrameTimestamp !== null) {
-          const deltaMs = timestamp - lastFrameTimestamp;
-          currentTimeMs = Math.min(totalDurationMs, currentTimeMs + deltaMs);
-        }
-        // Lead-in over (or audio just finished loading): bring the backing track in
-        if (
-          hasBackingTrack() &&
-          !audioStarting &&
-          !backingAudio.ended &&
-          currentTimeMs + syncOffsetMs() >= 0
-        ) {
-          syncAudioToChart();
-        }
-      }
+  // Main render loop strictly locked to HTMLAudioElement.currentTime via AudioClock
+  // NEVER uses requestAnimationFrame delta accumulation or performance.now()
+  function animate(): void {
+    const currentAudioTimeMs = clock.getCurrentAudioTimeMs();
+    clock.updateDebugHud();
+    engine.update(currentAudioTimeMs);
 
-      engine.update(currentTimeMs);
-      updateHud(currentTimeMs);
-
-      if (currentTimeMs >= totalDurationMs) {
-        void setPlaying(false);
+    if (clock.isPlaying()) {
+      updateHud(currentAudioTimeMs);
+      if (currentAudioTimeMs >= totalDurationMs) {
+        clock.pause();
       }
-      lastFrameTimestamp = timestamp;
     }
 
-    // Sample live guitar AnalyserNode tap for level & pitch telemetry
+    // Sample live guitar AnalyserNode tap for level & pitch telemetry + live note hit evaluation
     if (guitarInput.isActive()) {
       const telemetry = guitarInput.samplePitchAndLevel();
       const levelPct = Math.min(100, Math.round(telemetry.rmsLevel * 450));
       guitarLevelFill.style.width = `${levelPct}%`;
       if (telemetry.noteName && telemetry.frequencyHz) {
         guitarPitchBadge.textContent = `${telemetry.noteName} (${telemetry.frequencyHz} Hz)`;
+        if (
+          telemetry.midiNote !== null &&
+          clock.isPlaying() &&
+          !isPauseMenuOpen() &&
+          !isSetupOpen()
+        ) {
+          engine.triggerPitchHit(telemetry.midiNote, currentAudioTimeMs);
+        }
       } else {
         guitarPitchBadge.textContent = 'Listening…';
       }
