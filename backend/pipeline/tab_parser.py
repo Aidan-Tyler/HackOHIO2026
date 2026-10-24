@@ -109,6 +109,48 @@ def _resolve_technique_label(flags: dict[str, bool], effect: Any = None) -> str:
     return "normal"
 
 
+def _find_companion_octave_guitar_track(
+    song: Any, primary_track: Any
+) -> Any | None:
+    """Finds a companion 'Guitar w/ Octave' track used for empty verse measures."""
+    for track in song.tracks:
+        if track is primary_track or track.isPercussionTrack:
+            continue
+        name_lower = (track.name or "").lower()
+        if "guitar" in name_lower and "octave" in name_lower:
+            return track
+    return None
+
+
+def _map_companion_note_to_guitar(
+    note: Any, companion_tuning: list[int], primary_tuning: list[int]
+) -> tuple[int, int, int]:
+    """Maps a companion octave-guitar note onto the 6-string guitar neck.
+
+    Prefers the 5th string (A-string, string=5, lane=4) when the octave-shifted
+    pitch falls within frets 0..24.
+    """
+    comp_string_idx = max(0, min(len(companion_tuning) - 1, int(note.string) - 1))
+    raw_midi = companion_tuning[comp_string_idx] + int(note.value)
+    # Octave-pedal guitar tracks are notated 12 semitones below standard guitar pitch
+    guitar_midi = raw_midi + 12 if min(companion_tuning) < 40 else raw_midi
+
+    # Target string 5 (A-string, index 4) first if valid
+    if len(primary_tuning) >= 5:
+        a_string_base = primary_tuning[4]
+        a_fret = guitar_midi - a_string_base
+        if 0 <= a_fret <= 24:
+            return 5, a_fret, guitar_midi
+
+    # Fallback: find any string 1..6 where fret is in 0..24
+    for s_idx, base_pitch in enumerate(primary_tuning[:6]):
+        fret = guitar_midi - base_pitch
+        if 0 <= fret <= 24:
+            return s_idx + 1, fret, guitar_midi
+
+    return 5, max(0, min(24, int(note.value))), guitar_midi
+
+
 def parse_gp_file(
     gp_file_path: str | Path,
     output_json_path: str | Path | None = None,
@@ -120,7 +162,8 @@ def parse_gp_file(
         gp_file_path: Path to the input Guitar Pro file.
         output_json_path: Optional path to write the output JSON file.
         track_idx: Optional 0-based track index. If omitted, selects the first
-            non-percussion 6-string guitar track (or falls back to the first non-percussion track).
+            non-percussion 6-string guitar track (and merges any companion octave-guitar
+            track during empty measures).
 
     Returns:
         Dictionary containing song_metadata, tempo_changes, measures, and notes.
@@ -129,6 +172,7 @@ def parse_gp_file(
     song = guitarpro.parse(str(gp_path))
 
     # 1. Select Track
+    companion_track = None
     if track_idx is not None:
         selected_track = song.tracks[track_idx]
         resolved_track_idx = track_idx
@@ -146,8 +190,12 @@ def parse_gp_file(
                     selected_track = track
                     resolved_track_idx = idx
                     break
+        companion_track = _find_companion_octave_guitar_track(song, selected_track)
 
     tuning = [s.value for s in selected_track.strings]
+    companion_tuning = (
+        [s.value for s in companion_track.strings] if companion_track else []
+    )
     current_time_ms = 0.0
     current_bpm = float(song.tempo) if getattr(song, "tempo", None) else 120.0
 
@@ -156,6 +204,7 @@ def parse_gp_file(
             "measure": 1,
             "beat": 1,
             "time_ms": 0.0,
+            "timeMs": 0.0,
             "bpm": current_bpm,
         }
     ]
@@ -181,6 +230,7 @@ def parse_gp_file(
                         "measure": measure_num,
                         "beat": 1,
                         "time_ms": round(current_time_ms, 2),
+                        "timeMs": round(current_time_ms, 2),
                         "bpm": current_bpm,
                     }
                 )
@@ -197,6 +247,20 @@ def parse_gp_file(
         # Primary melodic voice (Voice 0)
         primary_voice = measure.voices[0] if measure.voices else None
         beats = list(primary_voice.beats) if primary_voice else []
+        primary_has_notes = any(bool(b.notes) for b in beats)
+
+        using_companion = False
+        if (
+            not primary_has_notes
+            and companion_track is not None
+            and measure_idx < len(companion_track.measures)
+        ):
+            comp_measure = companion_track.measures[measure_idx]
+            comp_voice = comp_measure.voices[0] if comp_measure.voices else None
+            comp_beats = list(comp_voice.beats) if comp_voice else []
+            if any(bool(b.notes) for b in comp_beats):
+                beats = comp_beats
+                using_companion = True
 
         for beat_idx, beat in enumerate(beats):
             # Check beat-level mixTableChange tempo adjustment
@@ -211,6 +275,7 @@ def parse_gp_file(
                             "measure": measure_num,
                             "beat": beat_idx + 1,
                             "time_ms": round(current_time_ms, 2),
+                            "timeMs": round(current_time_ms, 2),
                             "bpm": current_bpm,
                         }
                     )
@@ -223,39 +288,49 @@ def parse_gp_file(
                 continue
 
             for note in beat.notes:
-                # Clamp/validate string (1-6) and fret (0-24)
-                string_num = int(note.string)
-                fret_num = int(note.value)
-                if not (1 <= string_num <= 6):
-                    continue
-                fret_num = max(0, min(24, fret_num))
+                if using_companion:
+                    string_num, fret_num, midi_pitch = _map_companion_note_to_guitar(
+                        note, companion_tuning, tuning
+                    )
+                else:
+                    string_num = int(note.string)
+                    fret_num = int(note.value)
+                    if not (1 <= string_num <= 6):
+                        continue
+                    fret_num = max(0, min(24, fret_num))
+                    string_pitch_base = (
+                        tuning[string_num - 1] if string_num <= len(tuning) else 40
+                    )
+                    midi_pitch = string_pitch_base + fret_num
 
                 # Handle tied notes: extend previous note on the same string if present
                 if getattr(note, "type", None) == guitarpro.NoteType.tie:
                     for prev_note in reversed(highway_notes):
                         if prev_note["string"] == string_num:
-                            prev_note["duration_ms"] = round(
+                            new_dur = round(
                                 prev_note["duration_ms"] + beat_duration_ms, 2
                             )
+                            prev_note["duration_ms"] = new_dur
+                            prev_note["durationMs"] = new_dur
                             break
                     continue
 
-                lane = 6 - string_num  # 0 (Low E, string 6) -> 5 (High E, string 1)
+                # 0-based lane index: string 1 (High E) -> 0 .. string 5 (A) -> 4 .. string 6 (Low E) -> 5
+                lane = string_num - 1
                 flags = extract_technique_flags(note, beats=beats, beat_idx=beat_idx)
                 technique_label = _resolve_technique_label(
                     flags, getattr(note, "effect", None)
                 )
-
-                string_pitch_base = (
-                    tuning[string_num - 1] if string_num <= len(tuning) else 40
-                )
-                midi_pitch = string_pitch_base + fret_num
                 velocity = getattr(note, "velocity", 95)
+                rounded_time = round(current_time_ms, 2)
+                rounded_dur = round(beat_duration_ms, 2)
 
                 highway_notes.append(
                     {
-                        "time_ms": round(current_time_ms, 2),
-                        "duration_ms": round(beat_duration_ms, 2),
+                        "time_ms": rounded_time,
+                        "timeMs": rounded_time,
+                        "duration_ms": rounded_dur,
+                        "durationMs": rounded_dur,
                         "string": string_num,
                         "fret": fret_num,
                         "lane": lane,
@@ -280,30 +355,43 @@ def parse_gp_file(
             current_time_ms += measure_quarters * (60000.0 / current_bpm)
 
         measure_duration_ms = current_time_ms - measure_start_ms
+        rounded_start = round(measure_start_ms, 2)
+        rounded_end = round(current_time_ms, 2)
+        rounded_mdur = round(measure_duration_ms, 2)
         measures_meta.append(
             {
                 "number": measure_num,
-                "start_ms": round(measure_start_ms, 2),
-                "end_ms": round(current_time_ms, 2),
-                "duration_ms": round(measure_duration_ms, 2),
+                "start_ms": rounded_start,
+                "startMs": rounded_start,
+                "end_ms": rounded_end,
+                "endMs": rounded_end,
+                "duration_ms": rounded_mdur,
+                "durationMs": rounded_mdur,
                 "bpm": measure_bpm,
                 "time_signature": f"{numerator}/{denominator}",
+                "timeSignature": f"{numerator}/{denominator}",
             }
         )
 
+    metadata_obj: dict[str, Any] = {
+        "title": song.title or gp_path.stem,
+        "artist": song.artist or "Unknown Artist",
+        "initial_bpm": float(song.tempo) if getattr(song, "tempo", None) else 120.0,
+        "initialBpm": float(song.tempo) if getattr(song, "tempo", None) else 120.0,
+        "track_index": resolved_track_idx,
+        "track_name": selected_track.name,
+        "string_count": len(selected_track.strings),
+        "tuning_midi": tuning,
+        "total_measures": len(measures_meta),
+        "total_duration_ms": round(current_time_ms, 2),
+        "totalDurationMs": round(current_time_ms, 2),
+    }
+
     payload: dict[str, Any] = {
-        "song_metadata": {
-            "title": song.title or gp_path.stem,
-            "artist": song.artist or "Unknown Artist",
-            "initial_bpm": float(song.tempo) if getattr(song, "tempo", None) else 120.0,
-            "track_index": resolved_track_idx,
-            "track_name": selected_track.name,
-            "string_count": len(selected_track.strings),
-            "tuning_midi": tuning,
-            "total_measures": len(measures_meta),
-            "total_duration_ms": round(current_time_ms, 2),
-        },
+        "song_metadata": metadata_obj,
+        "metadata": metadata_obj,
         "tempo_changes": tempo_changes,
+        "tempoMap": tempo_changes,
         "measures": measures_meta,
         "notes": highway_notes,
     }

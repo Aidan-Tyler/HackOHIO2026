@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Real Guitar 3D Yousician Highway — Seven Nation Army</title>
+    <style>
+      :root {
+        --bg-dark: #060913;
+        --panel-bg: rgba(15, 23, 42, 0.86);
+        --panel-border: rgba(56, 189, 248, 0.25);
+        --accent: #38bdf8;
+        --green: #22c55e;
+        --text-main: #f8fafc;
+        --text-muted: #94a3b8;
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--bg-dark);
+        color: var(--text-main);
+        font-family:
+          'Inter',
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        user-select: none;
+      }
+
+      #highway-viewport {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Top HUD Bar */
+      .hud-top {
+        position: absolute;
+        top: 14px;
+        left: 18px;
+        right: 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 14px;
+        pointer-events: none;
+        z-index: 10;
+      }
+
+      .hud-card {
+        background: var(--panel-bg);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--panel-border);
+        border-radius: 14px;
+        padding: 12px 16px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+        pointer-events: auto;
+      }
+
+      #song-title {
+        font-size: 1.18rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #ffffff;
+      }
+
+      #song-artist {
+        font-size: 0.78rem;
+        color: var(--text-muted);
+        margin-top: 2px;
+      }
+
+      .string-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .legend-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid var(--rail-color, #38bdf8);
+        color: #e2e8f0;
+      }
+
+      .legend-chip .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--rail-color, #38bdf8);
+        box-shadow: 0 0 8px var(--rail-color, #38bdf8);
+      }
+
+      /* Guitar Audio Passthrough Card */
+      .guitar-io-card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-width: 290px;
+      }
+
+      .guitar-io-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        color: #cbd5e1;
+      }
+
+      select#audio-input-select {
+        background: rgba(15, 23, 42, 0.95);
+        color: var(--text-main);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 0.78rem;
+        width: 100%;
+      }
+
+      .guitar-io-controls {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .level-meter {
+        flex: 1;
+        height: 8px;
+        background: rgba(30, 41, 59, 0.9);
+        border-radius: 999px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+      }
+
+      #guitar-level-fill {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #22c55e, #38bdf8);
+        transition: width 0.06s linear;
+      }
+
+      #guitar-pitch-badge {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.76rem;
+        font-weight: 700;
+        color: #4ade80;
+      }
+
+      /* Telemetry Card */
+      .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(2, auto);
+        gap: 6px 16px;
+        font-size: 0.8rem;
+      }
+
+      .stat-label {
+        color: var(--text-muted);
+        font-weight: 500;
+      }
+
+      .stat-val {
+        font-weight: 700;
+        color: #f8fafc;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #hud-hand-pos {
+        color: #4ade80;
+        font-weight: 800;
+      }
+
+      .riff-preview {
+        margin-top: 8px;
+        padding-top: 7px;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        font-size: 0.78rem;
+      }
+
+      #hud-upcoming-riff {
+        color: #00d2ff;
+        font-weight: 800;
+        font-family: 'JetBrains Mono', monospace;
+      }
+
+      .note-pill {
+        display: inline-block;
+        padding: 2px 7px;
+        border-radius: 6px;
+        border: 1px solid;
+        font-size: 0.74rem;
+        background: rgba(15, 23, 42, 0.9);
+        margin-right: 4px;
+      }
+
+      .muted {
+        color: var(--text-muted);
+        font-style: italic;
+      }
+
+      /* Bottom Playback Controls Bar */
+      .hud-bottom {
+        position: absolute;
+        bottom: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: min(980px, calc(100% - 32px));
+        z-index: 10;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .scrub-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .time-badge {
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        min-width: 56px;
+        font-variant-numeric: tabular-nums;
+      }
+
+      #scrub-slider {
+        flex: 1;
+        accent-color: var(--accent);
+        height: 6px;
+        cursor: pointer;
+      }
+
+      .controls-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .btn-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      button {
+        background: rgba(30, 41, 59, 0.92);
+        color: var(--text-main);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 9px;
+        padding: 7px 13px;
+        font-size: 0.82rem;
+        font-weight: 700;
+        cursor: pointer;
+        transition: all 0.15s ease;
+      }
+
+      button:hover {
+        border-color: var(--accent);
+        background: rgba(56, 189, 248, 0.16);
+      }
+
+      button#play-pause-btn {
+        background: linear-gradient(135deg, #0284c7, #2563eb);
+        border-color: #38bdf8;
+        box-shadow: 0 0 16px rgba(56, 189, 248, 0.35);
+        min-width: 100px;
+      }
+
+      button#play-pause-btn.active {
+        background: linear-gradient(135deg, #f59e0b, #d97706);
+        border-color: #fbbf24;
+      }
+
+      button.active-guitar {
+        background: rgba(34, 197, 94, 0.22);
+        border-color: #22c55e;
+        color: #86efac;
+      }
+
+      .speed-control {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.78rem;
+        color: var(--text-muted);
+      }
+
+      input[type='range'].compact-slider {
+        width: 90px;
+        accent-color: var(--accent);
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="highway-viewport"></div>
+
+    <!-- Top Metadata, USB Guitar Passthrough & Live Telemetry HUD -->
+    <header class="hud-top">
+      <div class="hud-card">
+        <div id="song-title">Loading Chart…</div>
+        <div id="song-artist">Fetching /charts/white-stripes-seven_nation_army.json</div>
+        <div id="string-legend" class="string-legend"></div>
+      </div>
+
+      <!-- Live USB Guitar Input & Speaker Passthrough Panel -->
+      <div class="hud-card guitar-io-card">
+        <div class="guitar-io-header">
+          <span>USB Guitar Audio Interface</span>
+          <span id="guitar-pitch-badge">Off</span>
+        </div>
+        <select id="audio-input-select" aria-label="Select USB Guitar Audio Interface">
+          <option value="default">Default USB / Guitar Audio Input</option>
+        </select>
+        <div class="guitar-io-controls">
+          <button id="guitar-connect-btn" type="button">🎸 Enable Guitar Passthrough</button>
+          <div class="speed-control">
+            <label for="guitar-volume-slider">Gain:</label>
+            <input
+              id="guitar-volume-slider"
+              class="compact-slider"
+              type="range"
+              min="0"
+              max="2.0"
+              step="0.05"
+              value="0.85"
+            />
+          </div>
+        </div>
+        <div class="level-meter" title="Live Guitar Input Level">
+          <div id="guitar-level-fill"></div>
+        </div>
+      </div>
+
+      <div class="hud-card">
+        <div class="stats-grid">
+          <span class="stat-label">Measure:</span>
+          <span id="hud-measure" class="stat-val">1 / 115</span>
+          <span class="stat-label">Tempo:</span>
+          <span id="hud-bpm" class="stat-val">120 BPM</span>
+          <span class="stat-label">Hand Bracket:</span>
+          <span id="hud-hand-pos" class="stat-val">Frets 7–10</span>
+          <span class="stat-label">Fretboard Hit:</span>
+          <span id="hud-active-notes" class="stat-val"><span class="muted">Ready</span></span>
+        </div>
+        <div class="riff-preview">
+          <span class="stat-label">Upcoming Frets: </span>
+          <span id="hud-upcoming-riff">7 - 7 - 10 - 7 - 5 - 3 - 2</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Bottom Playback & Scrubbing Controls -->
+    <footer class="hud-bottom hud-card">
+      <div class="scrub-row">
+        <span id="time-current" class="time-badge">0:00.0</span>
+        <input
+          id="scrub-slider"
+          type="range"
+          min="0"
+          max="228500"
+          step="10"
+          value="0"
+          aria-label="Timeline Scrubbing Slider"
+        />
+        <span id="time-total" class="time-badge">3:48.5</span>
+      </div>
+
+      <div class="controls-row">
+        <div class="btn-group">
+          <button id="play-pause-btn" type="button">▶ Play</button>
+          <button id="restart-btn" type="button">⏮ 0:00 (Riff)</button>
+          <button id="jump-chorus-btn" type="button">⚡ 0:52 (Chords)</button>
+          <button id="backing-mute-btn" type="button">🔊 Backing: ON</button>
+        </div>
+
+        <div class="speed-control">
+          <label for="speed-slider">Highway Speed:</label>
+          <input
+            id="speed-slider"
+            class="compact-slider"
+            type="range"
+            min="0.008"
+            max="0.03"
+            step="0.001"
+            value="0.015"
+          />
+          <span id="speed-value">15 u/s</span>
+        </div>
+      </div>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

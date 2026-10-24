@@ -194,4 +194,9 @@ def test_saved_chart_artifact_exists_and_is_valid() -> None:
     data = json.loads(OUTPUT_CHART_PATH.read_text(encoding="utf-8"))
     assert data["song_metadata"]["title"] == "Seven Nation Army"
     assert len(data["measures"]) == 115
-    assert len(data["notes"]) == 651
+    assert len(data["notes"]) == 896
+    # First 7 notes are the iconic A-string riff: 7 - 7 - 10 - 7 - 5 - 3 - 2
+    first_seven = data["notes"][:7]
+    assert [n["fret"] for n in first_seven] == [7, 7, 10, 7, 5, 3, 2]
+    assert all(n["string"] == 5 and n["lane"] == 4 for n in first_seven)
+
