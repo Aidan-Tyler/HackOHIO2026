@@ -617,6 +617,24 @@ export class AudioClock {
     this.setGlobalOffsetMs(this.globalOffsetMs + deltaMs);
   }
 
+  /**
+   * Plays the song slower or faster (e.g. 0.75 = 75% speed) without changing pitch.
+   * The clock stays audio-locked: chart time still comes from `audio.currentTime`, so
+   * the highway, scoring and `globalOffsetMs` all follow the new speed automatically.
+   * `defaultPlaybackRate` carries the speed over when `loadTrack` swaps the source.
+   */
+  public setPlaybackRate(rate: number): void {
+    const clamped = Math.max(0.5, Math.min(1.5, rate));
+    this.audio.preservesPitch = true;
+    this.audio.defaultPlaybackRate = clamped;
+    this.audio.playbackRate = clamped;
+    this.updateDebugHud();
+  }
+
+  public getPlaybackRate(): number {
+    return this.audio.playbackRate;
+  }
+
   public setMuted(muted: boolean): void {
     this.audio.muted = muted;
   }
@@ -690,7 +708,7 @@ export class AudioClock {
 
     this.debugHudEl.innerHTML = `
       <div style="font-weight:700;color:#38bdf8">AUDIO CLOCK · <span style="color:${stateColor}">${state}</span></div>
-      <div>Time: <strong>${currentAudioTimeMs.toFixed(1)} ms</strong> · Sync: <strong>${offsetStr}</strong></div>
+      <div>Time: <strong>${currentAudioTimeMs.toFixed(1)} ms</strong> · Sync: <strong>${offsetStr}</strong> · Speed: <strong>${Math.round(this.audio.playbackRate * 100)}%</strong></div>
     `;
   }
 

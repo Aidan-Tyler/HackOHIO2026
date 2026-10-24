@@ -127,6 +127,10 @@ async function bootstrap(): Promise<void> {
     'speed-slider',
   ) as HTMLInputElement;
   const speedValueEl = document.getElementById('speed-value')!;
+  const songRateSlider = document.getElementById(
+    'song-rate-slider',
+  ) as HTMLInputElement;
+  const songRateValueEl = document.getElementById('song-rate-value')!;
 
   // USB Guitar Input Passthrough Controls (inside Pre-Song Guitar Setup Screen)
   const inputDeviceSelect = document.getElementById(
@@ -593,6 +597,12 @@ async function bootstrap(): Promise<void> {
     engine.setSpeedMultiplier(mult);
     speedValueEl.textContent = `${Math.round(engine.getSpeed())} u/s`;
     updateHud(clock.getCurrentAudioTimeMs());
+  });
+
+  songRateSlider.addEventListener('input', () => {
+    const rate = Number(songRateSlider.value);
+    clock.setPlaybackRate(rate);
+    songRateValueEl.textContent = `${Math.round(rate * 100)}%`;
   });
 
   // Live USB Guitar Input & Low-Latency Speaker Passthrough Controls
