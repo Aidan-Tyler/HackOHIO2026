@@ -623,6 +623,29 @@ export class HighwayEngine {
       opacity: 0.3,
     });
 
+    // 8-beat count-in bar lines leading up to the first note
+    const firstNoteMs = this.chartNotes[0]?.timeMs ?? 0;
+    const countInBpm = measures[0]?.bpm > 0 ? measures[0].bpm : this.currentBpm;
+    const countInBeatMs = 60000 / (countInBpm > 0 ? countInBpm : 120);
+    for (let b = 8; b >= 1; b--) {
+      const beatTimeMs = firstNoteMs - b * countInBeatMs;
+      if (beatTimeMs >= (measures[0]?.startMs ?? 0) - 10) continue;
+      const isDownbeat = b === 8 || b === 4;
+      const cGroup = new THREE.Group();
+      const cMesh = new THREE.Mesh(
+        isDownbeat ? measureBarGeo : beatBarGeo,
+        isDownbeat ? measureBarMat : beatBarMat,
+      );
+      cMesh.position.set(centerX, 0, 0);
+      cGroup.add(cMesh);
+      this.measuresGroup.add(cGroup);
+      this.beatLineObjects.push({
+        timeMs: beatTimeMs,
+        isMeasureStart: isDownbeat,
+        group: cGroup,
+      });
+    }
+
     for (const measure of measures) {
       const mGroup = new THREE.Group();
       const mMesh = new THREE.Mesh(measureBarGeo, measureBarMat);

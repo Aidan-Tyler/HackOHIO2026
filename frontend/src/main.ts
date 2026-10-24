@@ -6,12 +6,7 @@ import {
 } from './engine/clock';
 import { HighwayEngine, STRING_RAILS } from './engine/highway';
 import defaultSevenNationArmyRaw from '../public/charts/white-stripes-seven_nation_army.json';
-import {
-  normalizeChart,
-  type ChartData,
-  type ChartMeasure,
-  type ChartNote,
-} from './types/chart';
+import { normalizeChart, type ChartData } from './types/chart';
 import { MainMenu } from './menu/main_menu';
 import {
   fetchImportedSongs,
@@ -46,28 +41,8 @@ function formatTimeMs(ms: number): string {
   return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths}`;
 }
 
-function findCurrentMeasure(
-  measures: ChartMeasure[],
-  timeMs: number,
-): ChartMeasure | undefined {
-  for (let i = measures.length - 1; i >= 0; i--) {
-    if (timeMs >= measures[i].startMs) {
-      return measures[i];
-    }
-  }
-  return measures[0];
-}
-
 async function bootstrap(): Promise<void> {
   const viewportEl = document.getElementById('highway-viewport')!;
-  const titleEl = document.getElementById('song-title')!;
-  const artistEl = document.getElementById('song-artist')!;
-  const bpmEl = document.getElementById('hud-bpm')!;
-  const measureEl = document.getElementById('hud-measure')!;
-  const handPosEl = document.getElementById('hud-hand-pos')!;
-  const activeNotesEl = document.getElementById('hud-active-notes')!;
-  const upcomingRiffEl = document.getElementById('hud-upcoming-riff')!;
-  const legendContainer = document.getElementById('string-legend')!;
 
   // Retro Arcade Scoring & Hit/Miss Feedback HUD Elements
   const missVignetteEl = document.getElementById('miss-vignette')!;
@@ -147,16 +122,6 @@ async function bootstrap(): Promise<void> {
   ) as HTMLInputElement;
   const guitarPitchBadge = document.getElementById('guitar-pitch-badge')!;
   const guitarLevelFill = document.getElementById('guitar-level-fill')!;
-
-  // Render string rail legend badges (String 6 Low E Red at top down to String 1 High E Purple)
-  legendContainer.innerHTML = STRING_RAILS.map(
-    (rail) => `
-      <div class="legend-chip" style="--rail-color: ${rail.colorCss}">
-        <span class="dot"></span>
-        <span>${rail.label} (${rail.noteName})</span>
-      </div>
-    `,
-  ).join('');
 
   // Render 6-string reference pills on the Guitar Input Check screen
   tunerStringsRow.innerHTML = STRING_RAILS.map(
@@ -306,46 +271,34 @@ async function bootstrap(): Promise<void> {
 
   void refreshAudioDeviceOptions();
 
+  let lastDisplayedCountInBeat = 0;
+
   function updateHud(currentAudioTimeMs: number): void {
     const clampedMs = Math.max(0, currentAudioTimeMs);
     timeCurrentEl.textContent = formatTimeMs(clampedMs);
     scrubSlider.value = String(Math.round(clampedMs));
 
-    const handRange = engine.getActiveHandPosition();
-    handPosEl.textContent = `Frets ${handRange.startFret}–${handRange.endFret} / ${engine.getMaxFret()}`;
-
-    if (!chart) return;
-
-    const currentMeasure = findCurrentMeasure(chart.measures, clampedMs);
-    if (currentMeasure) {
-      measureEl.textContent = `${currentMeasure.number} / ${chart.measures.length}`;
-      bpmEl.textContent = `${Math.round(currentMeasure.bpm)} BPM`;
-    }
-
-    const activeNotes: ChartNote[] = engine.getActiveNotesAtHitBar();
-    if (activeNotes.length > 0) {
-      activeNotesEl.innerHTML = activeNotes
-        .map((n) => {
-          const rail = STRING_RAILS.find((r) => r.stringNumber === n.string);
-          const color = rail?.colorCss ?? '#38bdf8';
-          return `<span class="note-pill" style="border-color:${color};color:${color}">S${n.string} · Fret <strong>${n.fret}</strong></span>`;
-        })
-        .join(' ');
-    } else {
-      activeNotesEl.innerHTML = `<span class="muted">Waiting at Fretboard…</span>`;
-    }
-
-    const upcoming = chart.notes
-      .filter((n) => n.timeMs >= currentAudioTimeMs - 80)
-      .slice(0, 7);
-    if (upcoming.length > 0) {
-      upcomingRiffEl.textContent = upcoming.map((n) => `${n.fret}`).join(' - ');
-    } else {
-      upcomingRiffEl.textContent = 'End of chart';
+    const countIn = clock.getCountInBeatInfo(currentAudioTimeMs);
+    if (countIn.active && clock.isPlaying()) {
+      if (countIn.beatNumber !== lastDisplayedCountInBeat) {
+        lastDisplayedCountInBeat = countIn.beatNumber;
+        arcadeRatingEl.textContent = `COUNT-IN · ${countIn.beatNumber}/${countIn.totalBeats}`;
+        arcadeRatingEl.setAttribute(
+          'data-rating',
+          countIn.beatNumber % 4 === 1 ? 'PERFECT' : 'GREAT',
+        );
+        arcadeRatingEl.classList.remove('pop');
+        void arcadeRatingEl.offsetWidth;
+        arcadeRatingEl.classList.add('pop');
+      }
+    } else if (lastDisplayedCountInBeat !== 0) {
+      lastDisplayedCountInBeat = 0;
+      arcadeRatingEl.classList.remove('pop');
     }
   }
 
   function resetSongToStart(): void {
+    lastDisplayedCountInBeat = 0;
     clock.resetToTrackStart();
     engine.resetScoring();
     arcadeRatingEl.classList.remove('pop');
@@ -478,16 +431,14 @@ async function bootstrap(): Promise<void> {
       baseAutoOffsetMs = 0;
     }
 
+    const initialBpm =
+      chart.measures[0]?.bpm || chart.metadata.initialBpm || song.bpm || 120;
+    clock.configureCountIn(initialBpm, firstTabNoteMs);
     clock.setGlobalOffsetMs(baseAutoOffsetMs + loadSavedNudgeMs());
 
     scrubSlider.max = String(Math.ceil(totalDurationMs));
     timeTotalEl.textContent = formatTimeMs(totalDurationMs);
-    titleEl.textContent = chart.metadata.title;
     engine.loadChart(chart);
-    const synthLabel = clock.isUsingSynthFallback()
-      ? ' · Web Audio Synth/Metronome'
-      : '';
-    artistEl.textContent = `${chart.metadata.artist} · ${chart.notes.length} Notes · ${engine.getMaxFret()} Frets${synthLabel}`;
     renderSectionButtons(song);
     speedValueEl.textContent = `${engine.getSpeed().toFixed(1)} u/s`;
     resetSongToStart();
