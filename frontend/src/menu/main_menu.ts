@@ -1,6 +1,7 @@
 import { STRING_RAILS } from '../engine/highway';
 import type { SongEntry } from './song_library';
 import {
+  deleteImportedSong,
   fetchBackingTrackStatus,
   importTab,
   rebuildBackingTrack,
@@ -10,6 +11,13 @@ import {
 } from './tab_api';
 
 const AUDIO_POLL_MS = 3000;
+/** How long the remove button waits for a second, confirming click */
+const REMOVE_CONFIRM_MS = 3000;
+
+/** Songs added from GProTab can be removed; bundled songs (songs.json) can't */
+function isImported(song: SongEntry): boolean {
+  return song.id.startsWith('gprotab-');
+}
 
 export interface MainMenuCallbacks {
   /** Called when the player picks a song and hits Play */
@@ -64,6 +72,10 @@ export class MainMenu {
   /** Increments per search so a slow earlier response can't overwrite a newer one */
   private searchSeq = 0;
   private audioPollTimer: number | null = null;
+  /** Song whose remove button has been clicked once and is waiting for confirmation */
+  private confirmRemoveId: string | null = null;
+  private confirmRemoveTimer: number | null = null;
+  private removingId: string | null = null;
 
   constructor(private readonly callbacks: MainMenuCallbacks) {
     this.rootEl = document.getElementById('main-menu')!;
@@ -85,11 +97,17 @@ export class MainMenu {
       .join('');
 
     this.songListEl.addEventListener('click', (e) => {
+      const removeBtn = (e.target as HTMLElement).closest<HTMLElement>('[data-remove-id]');
+      if (removeBtn) {
+        void this.handleRemoveClick(removeBtn.dataset.removeId!);
+        return;
+      }
       const card = (e.target as HTMLElement).closest<HTMLElement>('[data-song-id]');
       if (card) this.select(card.dataset.songId!);
     });
 
     this.songListEl.addEventListener('dblclick', (e) => {
+      if ((e.target as HTMLElement).closest('[data-remove-id]')) return;
       const card = (e.target as HTMLElement).closest<HTMLElement>('[data-song-id]');
       if (card) {
         this.select(card.dataset.songId!);
@@ -195,6 +213,43 @@ export class MainMenu {
       this.selectedSongId = songs[0].id;
     }
     this.render();
+  }
+
+  /** First click arms the button ("Remove?"), a second click within 3s deletes */
+  private async handleRemoveClick(songId: string): Promise<void> {
+    if (this.removingId) return;
+    if (this.confirmRemoveTimer !== null) window.clearTimeout(this.confirmRemoveTimer);
+
+    if (this.confirmRemoveId !== songId) {
+      this.confirmRemoveId = songId;
+      this.confirmRemoveTimer = window.setTimeout(() => {
+        this.confirmRemoveId = null;
+        this.confirmRemoveTimer = null;
+        this.render();
+      }, REMOVE_CONFIRM_MS);
+      this.render();
+      return;
+    }
+
+    this.confirmRemoveId = null;
+    this.confirmRemoveTimer = null;
+    this.removingId = songId;
+    const song = this.songs.find((s) => s.id === songId);
+    this.render();
+    try {
+      await deleteImportedSong(songId);
+      this.songs = this.songs.filter((s) => s.id !== songId);
+      if (this.selectedSongId === songId) {
+        this.selectedSongId = this.songs[0]?.id ?? null;
+      }
+      this.setStatus(song ? `Removed “${song.title}”.` : '');
+    } catch (err) {
+      this.setStatus(`Couldn't remove ${song?.title ?? 'song'}: ${errorMessage(err)}`);
+    } finally {
+      this.removingId = null;
+      this.render();
+      this.renderSearchResults(); // "In setlist" → "Add" again
+    }
   }
 
   private applyBackingTrackStatus(songId: string, status: BackingTrackStatus): void {
@@ -320,7 +375,16 @@ export class MainMenu {
         const bars = Array.from({ length: 5 }, (_, i) =>
           `<span class="bar${i < song.difficulty ? ' on' : ''}" style="height:${5 + i * 2}px"></span>`,
         ).join('');
+        const confirming = song.id === this.confirmRemoveId;
+        const removing = song.id === this.removingId;
+        const removeBtn = isImported(song)
+          ? `<button type="button" class="song-remove-btn${confirming ? ' confirming' : ''}"
+                     data-remove-id="${escapeHtml(song.id)}" ${removing ? 'disabled' : ''}
+                     aria-label="Remove ${escapeHtml(song.title)} from the setlist"
+                     title="Remove from setlist">${removing ? '…' : confirming ? 'Remove?' : '×'}</button>`
+          : '';
         return `
+          <div class="song-row-wrap">
           <button type="button" class="song-row${selected ? ' selected' : ''}"
                   data-song-id="${escapeHtml(song.id)}" aria-pressed="${selected}">
             <span class="song-row-num">${String(idx + 1).padStart(2, '0')}</span>
@@ -336,6 +400,8 @@ export class MainMenu {
               <span class="difficulty" title="Difficulty ${song.difficulty}/5">${bars}</span>
             </span>
           </button>
+          ${removeBtn}
+          </div>
         `;
       })
       .join('');

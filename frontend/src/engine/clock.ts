@@ -11,6 +11,11 @@ export interface ClockOptions {
   onPlayStateChange?: (isPlaying: boolean, state: PlaybackState) => void;
   /** Callback fired when globalOffsetMs changes */
   onOffsetChange?: (globalOffsetMs: number) => void;
+  /**
+   * When set, the Space hotkey calls this instead of starting playback directly
+   * while paused (e.g. to run a count-in first). Pausing is unaffected.
+   */
+  onRequestPlay?: () => void;
 }
 
 export const SYNTH_LEAD_IN_MS = 4000;
@@ -873,7 +878,11 @@ export class AudioClock {
 
     if (e.code === 'Space') {
       e.preventDefault();
-      void this.togglePlayPause();
+      if (!this.isPlaying() && this.options.onRequestPlay) {
+        this.options.onRequestPlay();
+      } else {
+        void this.togglePlayPause();
+      }
     } else if (e.code === 'BracketLeft' || e.key === '[') {
       e.preventDefault();
       this.globalOffsetMs -= 10;

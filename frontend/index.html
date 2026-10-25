@@ -316,6 +316,49 @@
           transform 0.14s cubic-bezier(0.22, 1.4, 0.36, 1);
       }
 
+      /* Pre-song / resume count-in */
+      #countdown-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 14;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+      }
+
+      #countdown-overlay[hidden] {
+        display: none;
+      }
+
+      #countdown-number {
+        font-family: 'Big Shoulders Display', sans-serif;
+        font-size: clamp(6rem, 22vw, 12rem);
+        font-weight: 900;
+        line-height: 1;
+        color: #ffffff;
+        text-shadow:
+          0 0 40px rgba(56, 189, 248, 0.55),
+          0 6px 30px rgba(0, 0, 0, 0.7);
+      }
+
+      #countdown-number.go {
+        color: #4ade80;
+        text-shadow:
+          0 0 40px rgba(74, 222, 128, 0.6),
+          0 6px 30px rgba(0, 0, 0, 0.7);
+      }
+
+      #countdown-number.tick {
+        animation: countdown-tick 0.45s cubic-bezier(0.22, 1.4, 0.36, 1);
+      }
+
+      @keyframes countdown-tick {
+        0% { opacity: 0; transform: scale(1.6); }
+        40% { opacity: 1; transform: scale(0.95); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+
       #arcade-rating.pop {
         opacity: 1;
         transform: scale(1.08);
@@ -750,6 +793,52 @@
 
       #main-menu button.song-row:hover {
         background: var(--m-row);
+      }
+
+      .song-row-wrap {
+        display: flex;
+        align-items: stretch;
+        border-bottom: 1px solid var(--m-line);
+      }
+
+      #main-menu .song-row-wrap button.song-row {
+        flex: 1;
+        min-width: 0;
+        border-bottom: none;
+      }
+
+      #main-menu button.song-remove-btn {
+        flex-shrink: 0;
+        width: 44px;
+        text-align: center;
+        font-size: 1.1rem;
+        color: var(--m-dim);
+        opacity: 0.55;
+        transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+      }
+
+      .song-row-wrap:hover button.song-remove-btn,
+      #main-menu button.song-remove-btn:focus-visible {
+        opacity: 1;
+      }
+
+      #main-menu button.song-remove-btn:hover {
+        color: var(--m-accent);
+      }
+
+      #main-menu button.song-remove-btn.confirming {
+        width: auto;
+        padding: 0 12px;
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--m-bg);
+        background: var(--m-accent);
+        opacity: 1;
+      }
+
+      #main-menu button.song-remove-btn:disabled {
+        cursor: progress;
       }
 
       #main-menu button.song-row.selected {
@@ -1234,6 +1323,11 @@
           <span><kbd>Esc</kbd>pause menu</span>
         </footer>
       </div>
+    </div>
+
+    <!-- Count-in shown before a song starts or resumes -->
+    <div id="countdown-overlay" aria-live="assertive" hidden>
+      <span id="countdown-number"></span>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

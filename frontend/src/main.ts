@@ -210,6 +210,14 @@ async function bootstrap(): Promise<void> {
   let menuRef: MainMenu | null = null;
   let baseAutoOffsetMs = -3108;
 
+  // Count-in before playback starts/resumes. Bumping the token cancels a running one
+  const COUNTDOWN_BEATS = 3;
+  const countdownOverlay = document.getElementById('countdown-overlay')!;
+  const countdownNumberEl = document.getElementById('countdown-number')!;
+  let countdownToken = 0;
+  let countdownActive = false;
+  let clickCtx: AudioContext | null = null;
+
   function isSetupOpen(): boolean {
     return !guitarSetupScreen.hidden;
   }
@@ -235,6 +243,11 @@ async function bootstrap(): Promise<void> {
   const clock = new AudioClock({
     initialOffsetMs: baseAutoOffsetMs,
     shouldIgnoreHotkeys: () => Boolean(menuRef?.isOpen()) || isSetupOpen(),
+    // Space while paused counts in; Space during the count-in cancels it
+    onRequestPlay: () => {
+      if (countdownActive) cancelCountdown();
+      else void playWithCountdown();
+    },
     onPlayStateChange: (playing) => {
       playPauseBtn.textContent = playing ? '⏸ Pause' : '▶ Play';
       playPauseBtn.classList.toggle('active', playing);
@@ -297,6 +310,81 @@ async function bootstrap(): Promise<void> {
     }
   }
 
+  function showCountdownText(text: string): void {
+    countdownNumberEl.textContent = text;
+    countdownNumberEl.classList.toggle('go', text === 'GO');
+    countdownNumberEl.classList.remove('tick');
+    void countdownNumberEl.offsetWidth; // Restart the CSS animation
+    countdownNumberEl.classList.add('tick');
+  }
+
+  /** Short metronome click for the count-in (skipped when the backing track is muted) */
+  function playCountClick(accent: boolean): void {
+    if (clock.isMuted()) return;
+    try {
+      clickCtx ??= new AudioContext();
+      const t = clickCtx.currentTime;
+      const osc = clickCtx.createOscillator();
+      const gain = clickCtx.createGain();
+      osc.frequency.value = accent ? 1320 : 880;
+      gain.gain.setValueAtTime(0.25, t);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
+      osc.connect(gain).connect(clickCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.09);
+    } catch {
+      // Audio unavailable: the visual count still runs
+    }
+  }
+
+  function cancelCountdown(): void {
+    if (!countdownActive) return;
+    countdownToken++;
+    countdownActive = false;
+    countdownOverlay.hidden = true;
+  }
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  /**
+   * Counts "3, 2, 1, GO" at the song's tempo (scaled by Song Speed) and then starts
+   * playback, so the player has time to get their hands on the guitar.
+   */
+  async function playWithCountdown(): Promise<void> {
+    if (!chart || clock.isPlaying()) return;
+    cancelCountdown();
+    if (clock.getCurrentAudioTimeMs() >= totalDurationMs || clock.audio.ended) {
+      resetSongToStart();
+    }
+
+    const token = ++countdownToken;
+    countdownActive = true;
+    const bpm =
+      findCurrentMeasure(chart.measures, clock.getCurrentAudioTimeMs())?.bpm ??
+      chart.metadata.initialBpm;
+    const beatMs = Math.max(
+      400,
+      Math.min(1000, 60000 / (bpm || 120) / clock.getPlaybackRate()),
+    );
+
+    countdownOverlay.hidden = false;
+    for (let n = COUNTDOWN_BEATS; n >= 1; n--) {
+      showCountdownText(String(n));
+      playCountClick(n === COUNTDOWN_BEATS);
+      await delay(beatMs);
+      if (token !== countdownToken) return;
+    }
+
+    countdownActive = false;
+    showCountdownText('GO');
+    window.setTimeout(() => {
+      if (token === countdownToken) countdownOverlay.hidden = true;
+    }, 500);
+    await clock.play();
+  }
+
   function resetSongToStart(): void {
     lastDisplayedCountInBeat = 0;
     clock.resetToTrackStart();
@@ -334,6 +422,7 @@ async function bootstrap(): Promise<void> {
 
   // Modal Navigation Helpers
   function showGuitarSetupScreen(): void {
+    cancelCountdown();
     clock.pause();
     pauseMenuEl.hidden = true;
     guitarSetupScreen.hidden = false;
@@ -350,6 +439,7 @@ async function bootstrap(): Promise<void> {
   }
 
   function openPauseMenu(): void {
+    cancelCountdown();
     clock.pause();
     pauseMenuEl.hidden = false;
     if (currentSong) {
@@ -362,7 +452,7 @@ async function bootstrap(): Promise<void> {
   function closePauseMenu(autoResume = false): void {
     pauseMenuEl.hidden = true;
     if (autoResume) {
-      void clock.play();
+      void playWithCountdown();
     }
   }
 
@@ -371,6 +461,7 @@ async function bootstrap(): Promise<void> {
     song: SongEntry,
     showSetupBeforeStart = true,
   ): Promise<void> {
+    cancelCountdown();
     clock.pause();
 
     let rawJson: Record<string, unknown> | null = null;
@@ -456,6 +547,7 @@ async function bootstrap(): Promise<void> {
   menuRef = menu;
 
   function openMainMenu(): void {
+    cancelCountdown();
     clock.pause();
     hideGuitarSetupScreen();
     pauseMenuEl.hidden = true;
@@ -483,7 +575,7 @@ async function bootstrap(): Promise<void> {
   // Pre-Song Guitar Setup Screen Actions
   startSongBtn.addEventListener('click', () => {
     hideGuitarSetupScreen();
-    void clock.play();
+    void playWithCountdown();
   });
 
   setupBackBtn.addEventListener('click', () => {
@@ -509,10 +601,13 @@ async function bootstrap(): Promise<void> {
 
   playPauseBtn.addEventListener('click', () => {
     if (!chart) return;
-    if (clock.getCurrentAudioTimeMs() >= totalDurationMs) {
-      resetSongToStart();
+    if (countdownActive) {
+      cancelCountdown();
+    } else if (clock.isPlaying()) {
+      clock.pause();
+    } else {
+      void playWithCountdown();
     }
-    void clock.togglePlayPause();
   });
 
   restartBtn.addEventListener('click', () => {
@@ -608,7 +703,7 @@ async function bootstrap(): Promise<void> {
       } else if (e.code === 'Enter') {
         e.preventDefault();
         hideGuitarSetupScreen();
-        void clock.play();
+        void playWithCountdown();
       }
       return;
     }

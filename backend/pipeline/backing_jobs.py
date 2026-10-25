@@ -73,6 +73,18 @@ def read_status(audio_dir: Path, chart_id: str) -> dict[str, Any]:
     return status
 
 
+def is_running(chart_id: str) -> bool:
+    with _lock:
+        return chart_id in _running
+
+
+def delete_audio(audio_dir: Path, chart_id: str) -> None:
+    """Removes a song's backing track and job status (callers check `is_running` first)."""
+    _status_path(audio_dir, chart_id).unlink(missing_ok=True)
+    for path in audio_dir.glob(f"{chart_id}_backing.*"):
+        path.unlink(missing_ok=True)
+
+
 def start_job(audio_dir: Path, chart_id: str, youtube_source: str, first_note_ms: float) -> bool:
     """Marks the job pending and runs it on a worker thread. Returns False if already running."""
     with _lock:

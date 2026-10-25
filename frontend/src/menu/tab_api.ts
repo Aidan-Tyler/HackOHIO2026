@@ -90,3 +90,9 @@ export async function rebuildBackingTrack(
   }
   return (await response.json()) as BackingTrackStatus;
 }
+
+/** Deletes an imported song (chart, tab file and backing track) from the backend */
+export async function deleteImportedSong(songId: string): Promise<void> {
+  const response = await fetch(`/api/songs/${encodeURIComponent(songId)}`, { method: 'DELETE' });
+  if (!response.ok) throw new Error(await readError(response));
+}
