@@ -25,6 +25,7 @@ FIRST_HIT_WINDOW_S = 30.0
 YOUTUBE_HOSTS = ("youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be")
 
 _running: set[str] = set()
+_cancelled: set[str] = set()
 _lock = threading.Lock()
 
 
@@ -79,15 +80,22 @@ def is_running(chart_id: str) -> bool:
 
 
 def delete_audio(audio_dir: Path, chart_id: str) -> None:
-    """Removes a song's backing track and job status (callers check `is_running` first)."""
+    """Removes a song's backing track and job status, cancelling any in-flight job."""
+    with _lock:
+        if chart_id in _running:
+            _cancelled.add(chart_id)
     _status_path(audio_dir, chart_id).unlink(missing_ok=True)
     for path in audio_dir.glob(f"{chart_id}_backing.*"):
         path.unlink(missing_ok=True)
+    for path in audio_dir.glob(f"{chart_id}.*"):
+        if path.suffix in (".mp3", ".wav", ".webm", ".m4a", ".opus", ".part"):
+            path.unlink(missing_ok=True)
 
 
 def start_job(audio_dir: Path, chart_id: str, youtube_source: str, first_note_ms: float) -> bool:
     """Marks the job pending and runs it on a worker thread. Returns False if already running."""
     with _lock:
+        _cancelled.discard(chart_id)
         if chart_id in _running:
             return False
         _running.add(chart_id)
@@ -124,6 +132,12 @@ def run_job(audio_dir: Path, chart_id: str, youtube_source: str, first_note_ms: 
         except Exception:  # Onset detection is best-effort; the player can nudge sync in-game
             offset_ms = 0
 
+        with _lock:
+            if chart_id in _cancelled:
+                _cancelled.discard(chart_id)
+                delete_audio(audio_dir, chart_id)
+                return
+
         _write_status(
             audio_dir,
             chart_id,
@@ -136,6 +150,10 @@ def run_job(audio_dir: Path, chart_id: str, youtube_source: str, first_note_ms: 
             },
         )
     except Exception as err:
+        with _lock:
+            if chart_id in _cancelled:
+                _cancelled.discard(chart_id)
+                return
         _write_status(
             audio_dir,
             chart_id,

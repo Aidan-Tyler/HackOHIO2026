@@ -6,7 +6,11 @@ import {
 } from './engine/clock';
 import { HighwayEngine, STRING_RAILS } from './engine/highway';
 import defaultSevenNationArmyRaw from '../public/charts/white-stripes-seven_nation_army.json';
-import { normalizeChart, type ChartData } from './types/chart';
+import {
+  normalizeChart,
+  type ChartData,
+  type ChartMeasure,
+} from './types/chart';
 import { MainMenu } from './menu/main_menu';
 import {
   fetchImportedSongs,
@@ -39,6 +43,18 @@ function formatTimeMs(ms: number): string {
   const seconds = totalSec % 60;
   const tenths = Math.floor((clamped % 1000) / 100);
   return `${minutes}:${String(seconds).padStart(2, '0')}.${tenths}`;
+}
+
+function findCurrentMeasure(
+  measures: ChartMeasure[],
+  timeMs: number,
+): ChartMeasure | undefined {
+  for (let i = measures.length - 1; i >= 0; i--) {
+    if (timeMs >= measures[i].startMs) {
+      return measures[i];
+    }
+  }
+  return measures[0];
 }
 
 async function bootstrap(): Promise<void> {
@@ -357,6 +373,12 @@ async function bootstrap(): Promise<void> {
     cancelCountdown();
     if (clock.getCurrentAudioTimeMs() >= totalDurationMs || clock.audio.ended) {
       resetSongToStart();
+    }
+
+    // At the start of a song, AudioClock already runs the hardware-synced 8-beat count-in
+    if (clock.getCountInBeatInfo().active) {
+      await clock.play();
+      return;
     }
 
     const token = ++countdownToken;

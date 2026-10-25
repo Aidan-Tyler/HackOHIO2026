@@ -179,12 +179,6 @@ def delete_imported_song(chart_id: str) -> dict[str, Any]:
     """Removes an imported song: its chart, downloaded tab file and backing track."""
     if not CHART_ID_RE.match(chart_id) or not (CHARTS_DIR / f"{chart_id}.json").is_file():
         raise HTTPException(status_code=404, detail="Song not found")
-    # A running job would write the backing track back after we delete it
-    if backing_jobs.is_running(chart_id):
-        raise HTTPException(
-            status_code=409,
-            detail="Its backing track is still downloading. Try again in a few seconds.",
-        )
 
     (CHARTS_DIR / f"{chart_id}.json").unlink(missing_ok=True)
     for raw in RAW_GP_DIR.glob(f"{chart_id}.gp*"):

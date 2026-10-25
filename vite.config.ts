@@ -44,7 +44,7 @@ function autoStartBackendPlugin(): Plugin {
         console.log('[backend] Starting FastAPI server on http://127.0.0.1:8000 ...');
         backendProc = spawn(
           uvicornBin,
-          ['backend.main:app', '--host', '127.0.0.1', '--port', '8000'],
+          ['backend.main:app', '--reload', '--host', '127.0.0.1', '--port', '8000'],
           {
             cwd: repoRoot,
             stdio: 'inherit',

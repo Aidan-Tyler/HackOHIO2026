@@ -12,7 +12,7 @@ import {
 
 const AUDIO_POLL_MS = 3000;
 /** How long the remove button waits for a second, confirming click */
-const REMOVE_CONFIRM_MS = 3000;
+const REMOVE_CONFIRM_MS = 4000;
 
 /** Songs added from GProTab can be removed; bundled songs (songs.json) can't */
 function isImported(song: SongEntry): boolean {
@@ -215,10 +215,13 @@ export class MainMenu {
     this.render();
   }
 
-  /** First click arms the button ("Remove?"), a second click within 3s deletes */
+  /** First click arms the orange confirmation button ("Remove?"), second click deletes */
   private async handleRemoveClick(songId: string): Promise<void> {
     if (this.removingId) return;
-    if (this.confirmRemoveTimer !== null) window.clearTimeout(this.confirmRemoveTimer);
+    if (this.confirmRemoveTimer !== null) {
+      window.clearTimeout(this.confirmRemoveTimer);
+      this.confirmRemoveTimer = null;
+    }
 
     if (this.confirmRemoveId !== songId) {
       this.confirmRemoveId = songId;
@@ -232,7 +235,6 @@ export class MainMenu {
     }
 
     this.confirmRemoveId = null;
-    this.confirmRemoveTimer = null;
     this.removingId = songId;
     const song = this.songs.find((s) => s.id === songId);
     this.render();
